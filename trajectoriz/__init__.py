@@ -1,5 +1,8 @@
 """trajectoriz: locate agent trajectory files on the local machine."""
 
+__version__ = "0.1.0"
+
+import json
 import os
 import re
 import sqlite3
@@ -65,6 +68,86 @@ def iter_cursor_trajectories(cursor_dir=None):
             if p not in seen:
                 seen.add(p)
                 yield p
+
+
+def iter_copilot_event_trajectories(copilot_dir=None):
+    """Yield Copilot CLI session event JSONL paths (~/.copilot/session-state/*/events.jsonl)."""
+    d = Path(copilot_dir) if copilot_dir else Path.home() / ".copilot"
+    base = d / "session-state"
+    if base.is_dir():
+        yield from sorted(base.glob("*/events.jsonl"))
+
+
+def iter_agent_probe_trajectories(agent_probe_dir=None):
+    """Yield all agent_probe session JSONL paths (~/.local/share/agent_probe/*/*/*. jsonl)."""
+    d = (
+        Path(agent_probe_dir)
+        if agent_probe_dir
+        else Path.home() / ".local" / "share" / "agent_probe"
+    )
+    if d.is_dir():
+        yield from sorted(d.glob("*/*/*.jsonl"))
+
+
+def iter_opencode_sessions(opencode_dir=None):
+    """Yield (id, updated_at_ms, model_json, directory, first_prompt) from the opencode SQLite store."""
+    d = (
+        Path(opencode_dir)
+        if opencode_dir
+        else Path.home() / ".local" / "share" / "opencode"
+    )
+    db = d / "opencode.db"
+    if not db.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute(
+                "SELECT id, time_updated, model, directory FROM session ORDER BY time_updated DESC"
+            ).fetchall()
+            for session_id, ts_ms, model_json, directory in rows:
+                first_prompt = ""
+                try:
+                    row = conn.execute(
+                        """
+                        SELECT p.data
+                        FROM message m
+                        JOIN part p ON m.id = p.message_id
+                        WHERE m.session_id = ? AND json_extract(m.data, '$.role') = 'user'
+                        ORDER BY m.time_created, p.time_created
+                        LIMIT 1
+                        """,
+                        (session_id,),
+                    ).fetchone()
+                    if row:
+                        first_prompt = json.loads(row[0]).get("text", "").strip()
+                except Exception:
+                    pass
+                yield (session_id, ts_ms, model_json, directory, first_prompt)
+        finally:
+            conn.close()
+    except Exception:
+        return
+
+
+def iter_codex_db_sessions(codex_dir=None):
+    """Yield (id, updated_at_ms, first_user_message, model_provider, model, cwd) from ~/.codex/state_5.sqlite."""
+    d = Path(codex_dir) if codex_dir else Path.home() / ".codex"
+    db = d / "state_5.sqlite"
+    if not db.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute(
+                "SELECT id, updated_at_ms, first_user_message, model_provider, model, cwd"
+                " FROM threads ORDER BY updated_at_ms DESC"
+            ).fetchall()
+            yield from rows
+        finally:
+            conn.close()
+    except Exception:
+        return
 
 
 def iter_copilot_sessions(copilot_dir=None):

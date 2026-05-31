@@ -16,9 +16,13 @@ from trajectoriz import (
     iter_claude_project_trajectories,
     iter_codex_trajectories,
     iter_codex_rollout_files,
+    iter_codex_db_sessions,
     iter_pi_trajectories,
     iter_cursor_trajectories,
+    iter_copilot_event_trajectories,
     iter_copilot_sessions,
+    iter_agent_probe_trajectories,
+    iter_opencode_sessions,
 )
 
 # List all Claude Code trajectory files
@@ -37,6 +41,10 @@ for path in iter_codex_trajectories():
 for path in iter_codex_rollout_files():
     print(path)
 
+# List Codex sessions from SQLite store (~/.codex/state_5.sqlite)
+for session_id, updated_at_ms, first_msg, provider, model, cwd in iter_codex_db_sessions():
+    print(session_id, first_msg)
+
 # List pi coding agent session files
 for path in iter_pi_trajectories():
     print(path)
@@ -45,9 +53,21 @@ for path in iter_pi_trajectories():
 for path in iter_cursor_trajectories():
     print(path)
 
-# List Copilot CLI sessions
+# List Copilot CLI session event JSONL files (~/.copilot/session-state/*/events.jsonl)
+for path in iter_copilot_event_trajectories():
+    print(path)
+
+# List Copilot CLI sessions from SQLite store
 for session_id, created_at in iter_copilot_sessions():
     print(session_id, created_at)
+
+# List agent_probe session JSONL files (~/.local/share/agent_probe/*/*/*)
+for path in iter_agent_probe_trajectories():
+    print(path)
+
+# List opencode sessions from SQLite store (~/.local/share/opencode/opencode.db)
+for session_id, updated_at_ms, model_json, directory, first_prompt in iter_opencode_sessions():
+    print(session_id, first_prompt)
 ```
 
 ## License
