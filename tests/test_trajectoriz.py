@@ -164,6 +164,109 @@ def test_iter_opencode_sessions_empty(tmp_path):
     assert list(iter_opencode_sessions(opencode_dir=str(tmp_path))) == []
 
 
+def test_get_first_user_message_claude(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message_claude
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "system", "timestamp": "2024-01-01T00:00:00Z"}) + "\n"
+        + json.dumps({"type": "user", "timestamp": "2024-01-01T00:01:00Z",
+                      "message": {"content": "hello claude"}}) + "\n"
+    )
+    ts, text = get_first_user_message_claude(f)
+    assert ts == "2024-01-01T00:00:00Z"
+    assert text == "hello claude"
+
+
+def test_get_first_user_message_claude_skips_meta(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message_claude
+
+    pid = "pid-1"
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "isMeta": True, "promptId": pid,
+                    "timestamp": "2024-01-01T00:00:00Z",
+                    "message": {"content": "system prompt"}}) + "\n"
+        + json.dumps({"type": "user", "promptId": pid,
+                      "message": {"content": "should be skipped"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "real message"}}) + "\n"
+    )
+    ts, text = get_first_user_message_claude(f)
+    assert text == "real message"
+
+
+def test_get_first_user_message_copilot(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message_copilot
+
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        json.dumps({"type": "session.start", "timestamp": "2024-01-01T00:00:00Z"}) + "\n"
+        + json.dumps({"type": "user.message", "data": {"content": "fix the bug"}}) + "\n"
+    )
+    ts, text = get_first_user_message_copilot(f)
+    assert text == "fix the bug"
+
+
+def test_get_first_user_message_agent_probe_user_type(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message_agent_probe
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "session_start", "timestamp": "2024-01-01T00:00:00Z"}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "probe task"}}) + "\n"
+    )
+    ts, text = get_first_user_message_agent_probe(f)
+    assert text == "probe task"
+
+
+def test_get_first_user_message_dispatcher(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message
+
+    claude_dir = tmp_path / ".claude" / "projects" / "repo"
+    claude_dir.mkdir(parents=True)
+    f = claude_dir / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "timestamp": "2024-01-01T00:00:00Z",
+                    "message": {"content": "dispatched"}}) + "\n"
+    )
+
+    import unittest.mock as mock
+    with mock.patch("trajectoriz.Path.home", return_value=tmp_path):
+        ts, text = get_first_user_message(f)
+    assert text == "dispatched"
+
+
+def test_get_cwd_from_trajectory(tmp_path):
+    import json
+
+    from trajectoriz import get_cwd_from_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "system"}) + "\n"
+        + json.dumps({"type": "meta", "cwd": "/home/user/repo"}) + "\n"
+    )
+    assert get_cwd_from_trajectory(f) == "/home/user/repo"
+
+
+def test_get_cwd_from_trajectory_missing(tmp_path):
+    from trajectoriz import get_cwd_from_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text("{}\n")
+    assert get_cwd_from_trajectory(f) == ""
+
+
 def test_iter_opencode_sessions_with_data(tmp_path):
     import json
     import sqlite3

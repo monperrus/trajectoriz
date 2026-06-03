@@ -11,6 +11,9 @@ license = "MIT"
 requires-python = ">=3.8"
 dependencies = []
 
+[project.scripts]
+trajectoriz-cli = "trajectoriz.cli:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["trajectoriz*"]
