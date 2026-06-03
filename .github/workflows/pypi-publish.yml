@@ -1,0 +1,30 @@
+name: Upload Package to PyPI
+# authorization handled via trusted publishers, see https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+    - name: Version bump
+      uses: monperrus/pyproject-bump-pypi@b1a2f2a928cf85d85c555c62d29a42cd058ea405 # main
+      with:
+        file_to_bump: "./pyproject.toml"
+        bump_type: "minor"
+    - name: Set up Python
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+      with:
+        python-version: '3.x'
+    - run: pip install build
+    - run: python -m build --wheel
+    - name: Publish package
+      uses: pypa/gh-action-pypi-publish@ed0c53931b1dc9bd32cbe73a98c7f6766f8a527e # v1.13.0
