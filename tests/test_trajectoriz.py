@@ -140,22 +140,36 @@ def test_iter_codex_db_sessions_empty(tmp_path):
 def test_iter_codex_db_sessions_with_data(tmp_path):
     import sqlite3
 
-    from trajectoriz import iter_codex_db_sessions
+    from trajectoriz import CodexDbSession, iter_codex_db_sessions
 
     db = tmp_path / "state_5.sqlite"
     conn = sqlite3.connect(str(db))
     conn.execute(
-        "CREATE TABLE threads"
-        " (id TEXT, updated_at_ms INTEGER, first_user_message TEXT, model_provider TEXT, model TEXT, cwd TEXT)"
+        "CREATE TABLE threads (id TEXT, rollout_path TEXT, created_at_ms INTEGER, "
+        "updated_at_ms INTEGER, model_provider TEXT, model TEXT, cwd TEXT, "
+        "title TEXT, tokens_used INTEGER, first_user_message TEXT)"
     )
-    conn.execute("INSERT INTO threads VALUES ('id1', 1000, 'hello', 'openai', 'gpt-4', '/repo')")
+    conn.execute(
+        "INSERT INTO threads VALUES ('id1', '/path/rollout.jsonl', 900, 1000, "
+        "'openai', 'gpt-4', '/repo', 'My session', 42, 'hello')"
+    )
     conn.commit()
     conn.close()
 
     results = list(iter_codex_db_sessions(codex_dir=str(tmp_path)))
     assert len(results) == 1
-    assert results[0][0] == "id1"
-    assert results[0][2] == "hello"
+    s = results[0]
+    assert isinstance(s, CodexDbSession)
+    assert s.id == "id1"
+    assert s.rollout_path == "/path/rollout.jsonl"
+    assert s.created_at_ms == 900
+    assert s.updated_at_ms == 1000
+    assert s.model_provider == "openai"
+    assert s.model == "gpt-4"
+    assert s.cwd == "/repo"
+    assert s.title == "My session"
+    assert s.tokens_used == 42
+    assert s.first_user_message == "hello"
 
 
 def test_iter_opencode_sessions_empty(tmp_path):
@@ -271,14 +285,22 @@ def test_iter_opencode_sessions_with_data(tmp_path):
     import json
     import sqlite3
 
-    from trajectoriz import iter_opencode_sessions
+    from trajectoriz import OpencodeSession, iter_opencode_sessions
 
     db = tmp_path / "opencode.db"
     conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE session (id TEXT, time_updated INTEGER, model TEXT, directory TEXT)")
+    conn.execute(
+        "CREATE TABLE session (id TEXT, time_created INTEGER, time_updated INTEGER, "
+        "model TEXT, directory TEXT, agent TEXT, cost REAL, tokens_input INTEGER, "
+        "tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, "
+        "tokens_cache_write INTEGER)"
+    )
     conn.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
     conn.execute("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
-    conn.execute("INSERT INTO session VALUES ('s1', 2000, '{}', '/repo')")
+    conn.execute(
+        "INSERT INTO session VALUES ('s1', 1000, 2000, '{\"provider\":\"anthropic\"}', "
+        "'/repo', 'claude', 0.05, 100, 200, 10, 50, 30)"
+    )
     conn.execute("INSERT INTO message VALUES ('m1', 's1', 1, ?)", (json.dumps({"role": "user"}),))
     conn.execute("INSERT INTO part VALUES ('p1', 'm1', 1, ?)", (json.dumps({"text": "fix the bug"}),))
     conn.commit()
@@ -286,5 +308,16 @@ def test_iter_opencode_sessions_with_data(tmp_path):
 
     results = list(iter_opencode_sessions(opencode_dir=str(tmp_path)))
     assert len(results) == 1
-    assert results[0][0] == "s1"
-    assert results[0][4] == "fix the bug"
+    s = results[0]
+    assert isinstance(s, OpencodeSession)
+    assert s.id == "s1"
+    assert s.time_created == 1000
+    assert s.time_updated == 2000
+    assert s.agent == "claude"
+    assert s.cost == 0.05
+    assert s.tokens_input == 100
+    assert s.tokens_output == 200
+    assert s.tokens_reasoning == 10
+    assert s.tokens_cache_read == 50
+    assert s.tokens_cache_write == 30
+    assert s.first_prompt == "fix the bug"

@@ -90,8 +90,41 @@ def iter_agent_probe_trajectories(agent_probe_dir=None):
         yield from sorted(d.glob("*/*/*.jsonl"))
 
 
+@dataclass(frozen=True)
+class OpencodeSession:
+    """One row from the opencode session table, plus a pre-fetched first_prompt."""
+    id: str
+    time_created: int | None
+    time_updated: int | None
+    model: str | None
+    directory: str | None
+    agent: str | None
+    cost: float | None
+    tokens_input: int | None
+    tokens_output: int | None
+    tokens_reasoning: int | None
+    tokens_cache_read: int | None
+    tokens_cache_write: int | None
+    first_prompt: str
+
+
+@dataclass(frozen=True)
+class CodexDbSession:
+    """One row from the Codex state_5.sqlite threads table."""
+    id: str
+    rollout_path: str | None
+    created_at_ms: int | None
+    updated_at_ms: int | None
+    model_provider: str | None
+    model: str | None
+    cwd: str | None
+    title: str | None
+    tokens_used: int | None
+    first_user_message: str | None
+
+
 def iter_opencode_sessions(opencode_dir=None):
-    """Yield (id, updated_at_ms, model_json, directory, first_prompt) from the opencode SQLite store."""
+    """Yield OpencodeSession objects from the opencode SQLite store."""
     d = (
         Path(opencode_dir)
         if opencode_dir
@@ -104,12 +137,16 @@ def iter_opencode_sessions(opencode_dir=None):
         conn = sqlite3.connect(str(db))
         try:
             rows = conn.execute(
-                "SELECT id, time_updated, model, directory FROM session ORDER BY time_updated DESC"
+                "SELECT id, time_created, time_updated, model, directory, "
+                "agent, cost, tokens_input, tokens_output, tokens_reasoning, "
+                "tokens_cache_read, tokens_cache_write "
+                "FROM session ORDER BY time_updated DESC"
             ).fetchall()
-            for session_id, ts_ms, model_json, directory in rows:
+            for row in rows:
+                session_id = row[0]
                 first_prompt = ""
                 try:
-                    row = conn.execute(
+                    part_row = conn.execute(
                         """
                         SELECT p.data
                         FROM message m
@@ -120,11 +157,25 @@ def iter_opencode_sessions(opencode_dir=None):
                         """,
                         (session_id,),
                     ).fetchone()
-                    if row:
-                        first_prompt = json.loads(row[0]).get("text", "").strip()
+                    if part_row:
+                        first_prompt = json.loads(part_row[0]).get("text", "").strip()
                 except Exception:
                     pass
-                yield (session_id, ts_ms, model_json, directory, first_prompt)
+                yield OpencodeSession(
+                    id=row[0],
+                    time_created=row[1],
+                    time_updated=row[2],
+                    model=row[3],
+                    directory=row[4],
+                    agent=row[5],
+                    cost=row[6],
+                    tokens_input=row[7],
+                    tokens_output=row[8],
+                    tokens_reasoning=row[9],
+                    tokens_cache_read=row[10],
+                    tokens_cache_write=row[11],
+                    first_prompt=first_prompt,
+                )
         finally:
             conn.close()
     except Exception:
@@ -132,7 +183,7 @@ def iter_opencode_sessions(opencode_dir=None):
 
 
 def iter_codex_db_sessions(codex_dir=None):
-    """Yield (id, updated_at_ms, first_user_message, model_provider, model, cwd) from ~/.codex/state_5.sqlite."""
+    """Yield CodexDbSession objects from ~/.codex/state_5.sqlite."""
     d = Path(codex_dir) if codex_dir else Path.home() / ".codex"
     db = d / "state_5.sqlite"
     if not db.exists():
@@ -141,10 +192,23 @@ def iter_codex_db_sessions(codex_dir=None):
         conn = sqlite3.connect(str(db))
         try:
             rows = conn.execute(
-                "SELECT id, updated_at_ms, first_user_message, model_provider, model, cwd"
-                " FROM threads ORDER BY updated_at_ms DESC"
+                "SELECT id, rollout_path, created_at_ms, updated_at_ms, model_provider, "
+                "model, cwd, title, tokens_used, first_user_message "
+                "FROM threads ORDER BY updated_at_ms DESC"
             ).fetchall()
-            yield from rows
+            for row in rows:
+                yield CodexDbSession(
+                    id=row[0],
+                    rollout_path=row[1],
+                    created_at_ms=row[2],
+                    updated_at_ms=row[3],
+                    model_provider=row[4],
+                    model=row[5],
+                    cwd=row[6],
+                    title=row[7],
+                    tokens_used=row[8],
+                    first_user_message=row[9],
+                )
         finally:
             conn.close()
     except Exception:
