@@ -87,25 +87,24 @@ def _local_records(cwd: str) -> Iterator[TrajRecord]:
             ts, msg = tz.get_first_user_message_agent_probe(p)
             yield TrajRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
 
-    for session_id, ts_ms, model_json, directory, first_prompt in tz.iter_opencode_sessions():
-        if _cwd_matches(directory, cwd):
+    for sess in tz.iter_opencode_sessions():
+        if _cwd_matches(sess.directory, cwd):
             yield TrajRecord(
-                _short_id("oc", session_id),
+                _short_id("oc", sess.id),
                 "opencode",
-                str(ts_ms),
-                first_prompt,
-                {"type": "opencode", "session_id": session_id, "model": model_json, "dir": directory},
+                str(sess.time_updated or sess.time_created or ""),
+                sess.first_prompt,
+                {"type": "opencode", "session_id": sess.id, "model": sess.model, "dir": sess.directory},
             )
 
-    for row in tz.iter_codex_db_sessions():
-        sid, updated_ms, first_msg, _, model, rec_cwd = row
-        if _cwd_matches(rec_cwd, cwd):
+    for sess in tz.iter_codex_db_sessions():
+        if _cwd_matches(sess.cwd, cwd):
             yield TrajRecord(
-                _short_id("cd", str(sid)),
+                _short_id("cd", str(sess.id)),
                 "codex_db",
-                str(updated_ms),
-                first_msg or "",
-                {"type": "codex_db", "session_id": sid, "model": model, "cwd": rec_cwd},
+                str(sess.updated_at_ms or ""),
+                sess.first_user_message or "",
+                {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
             )
 
 
@@ -126,23 +125,22 @@ def _all_records() -> Iterator[TrajRecord]:
         ts, msg = tz.get_first_user_message_agent_probe(p)
         yield TrajRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
 
-    for session_id, ts_ms, model_json, directory, first_prompt in tz.iter_opencode_sessions():
+    for sess in tz.iter_opencode_sessions():
         yield TrajRecord(
-            _short_id("oc", session_id),
+            _short_id("oc", sess.id),
             "opencode",
-            str(ts_ms),
-            first_prompt,
-            {"type": "opencode", "session_id": session_id, "model": model_json, "dir": directory},
+            str(sess.time_updated or sess.time_created or ""),
+            sess.first_prompt,
+            {"type": "opencode", "session_id": sess.id, "model": sess.model, "dir": sess.directory},
         )
 
-    for row in tz.iter_codex_db_sessions():
-        sid, updated_ms, first_msg, _, model, cwd = row
+    for sess in tz.iter_codex_db_sessions():
         yield TrajRecord(
-            _short_id("cd", str(sid)),
+            _short_id("cd", str(sess.id)),
             "codex_db",
-            str(updated_ms),
-            first_msg or "",
-            {"type": "codex_db", "session_id": sid, "model": model, "cwd": cwd},
+            str(sess.updated_at_ms or ""),
+            sess.first_user_message or "",
+            {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
         )
 
     copilot_db = Path.home() / ".copilot" / "session-store.db"
@@ -317,6 +315,67 @@ def cmd_show(args) -> None:
     _paginate_items(steps, args.page, args.page_size, header, "steps")
 
 
+def _is_single_message_only(record: TrajRecord, message: str) -> bool:
+    """Return True if the trajectory has exactly one user message matching message."""
+    if (record.first_msg or "").strip().lower() != message.lower():
+        return False
+    if isinstance(record.source, Path):
+        try:
+            if record.agent == "claude":
+                traj = tz.parse_claude_trajectory(record.source)
+            elif record.agent == "codex":
+                traj = tz.parse_codex_trajectory(record.source)
+            else:
+                return True  # copilot/agent_probe: trust first_msg check above
+            return sum(1 for s in traj.steps if s["source"] == "user") == 1
+        except Exception:
+            return False
+    # DB-based sessions: trust the first_prompt field
+    return True
+
+
+def cmd_delete(args) -> None:
+    """Delete trajectories that have only one user message matching the given text."""
+    source = _all_records() if args.all else _local_records(os.getcwd())
+    matching = [r for r in source if _is_single_message_only(r, args.message)]
+
+    if not matching:
+        print(f"No trajectories found with only one user message '{args.message}'.")
+        return
+
+    print(f"Found {len(matching)} trajectory(ies) with only one user message '{args.message}':")
+    for r in matching:
+        src_info = str(r.source) if isinstance(r.source, Path) else str(r.source.get("session_id", ""))
+        date = r.timestamp[:10] if r.timestamp else "—"
+        print(f"  {r.id}  {r.agent:12s}  {date}  {src_info}")
+
+    if not args.yes:
+        try:
+            reply = input("\nDelete these? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.")
+            return
+        if reply != "y":
+            print("Aborted.")
+            return
+
+    deleted = 0
+    skipped = 0
+    for r in matching:
+        if isinstance(r.source, Path):
+            try:
+                r.source.unlink()
+                deleted += 1
+            except OSError as e:
+                print(f"Error deleting {r.source}: {e}", file=sys.stderr)
+        else:
+            print(f"Skipping {r.id} ({r.agent}): DB-session deletion not yet supported.",
+                  file=sys.stderr)
+            skipped += 1
+
+    print(f"Deleted {deleted} trajectory file(s)." + (f" Skipped {skipped}." if skipped else ""))
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
@@ -368,6 +427,19 @@ def main() -> None:
         help=f"Messages (steps) per page (default: {DEFAULT_SHOW_PAGE_SIZE})",
     )
     p_show.set_defaults(func=cmd_show)
+
+    # delete
+    p_delete = sub.add_parser(
+        "delete",
+        help="Delete trajectories whose only user message matches a given text.",
+    )
+    p_delete.add_argument("message", help="Delete trajectories whose sole user message matches this text (case-insensitive).")
+    p_delete.add_argument(
+        "--yes", "-y", action="store_true",
+        help="Skip confirmation prompt.",
+    )
+    p_delete.add_argument("--all", action="store_true", help="Search across all agents/directories.")
+    p_delete.set_defaults(func=cmd_delete)
 
     args = parser.parse_args()
     args.func(args)
