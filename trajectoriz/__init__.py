@@ -294,12 +294,14 @@ def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if not timestamp:
-                    timestamp = d.get("timestamp", "")
                 event_type = d.get("type")
                 if event_type == "user":
-                    content = d.get("message", {}).get("content", "")
+                    if not timestamp:
+                        timestamp = d.get("ts", "") or d.get("timestamp", "")
+                    content = d.get("content", "") or d.get("message", {}).get("content", "")
                 elif event_type == "user.message":
+                    if not timestamp:
+                        timestamp = d.get("ts", "") or d.get("timestamp", "")
                     content = d.get("data", {}).get("content", "")
                 else:
                     continue
