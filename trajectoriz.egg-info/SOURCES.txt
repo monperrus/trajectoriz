@@ -1,0 +1,11 @@
+LICENSE
+README.md
+pyproject.toml
+tests/test_trajectoriz.py
+trajectoriz/__init__.py
+trajectoriz/cli.py
+trajectoriz.egg-info/PKG-INFO
+trajectoriz.egg-info/SOURCES.txt
+trajectoriz.egg-info/dependency_links.txt
+trajectoriz.egg-info/entry_points.txt
+trajectoriz.egg-info/top_level.txt

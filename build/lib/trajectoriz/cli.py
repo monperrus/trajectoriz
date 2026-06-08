@@ -190,8 +190,6 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
             traj = tz.parse_claude_trajectory(record.source)
         elif record.agent == "codex":
             traj = tz.parse_codex_trajectory(record.source)
-        elif record.agent == "copilot":
-            traj = tz.parse_copilot_event_trajectory(record.source)
         elif record.agent == "agent_probe":
             hlines.append(f"**Source:** {record.source}")
             if record.first_msg:

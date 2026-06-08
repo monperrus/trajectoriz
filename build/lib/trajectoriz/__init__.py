@@ -294,14 +294,12 @@ def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not timestamp:
+                    timestamp = d.get("timestamp", "")
                 event_type = d.get("type")
                 if event_type == "user":
-                    if not timestamp:
-                        timestamp = d.get("ts", "") or d.get("timestamp", "")
-                    content = d.get("content", "") or d.get("message", {}).get("content", "")
+                    content = d.get("message", {}).get("content", "")
                 elif event_type == "user.message":
-                    if not timestamp:
-                        timestamp = d.get("ts", "") or d.get("timestamp", "")
                     content = d.get("data", {}).get("content", "")
                 else:
                     continue
@@ -700,126 +698,6 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
         session_id=session_id,
         model_name=model_name,
         agent_version=cli_version,
-        steps=steps,
-        total_prompt_tokens=total_prompt,
-        total_completion_tokens=total_completion,
-        total_cached_tokens=total_cached,
-        total_tool_calls=total_tool_calls,
-    )
-
-
-def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> ParsedTrajectory:
-    """Parse a Copilot CLI events.jsonl trajectory file."""
-    entries: list[dict] = []
-    with Path(jsonl_path).open(encoding="utf-8") as fh:
-        for raw in fh:
-            raw = raw.strip()
-            if raw:
-                try:
-                    entries.append(json.loads(raw))
-                except json.JSONDecodeError:
-                    continue
-
-    session_id: str | None = None
-    model_name: str | None = None
-    copilot_version: str | None = None
-
-    for entry in entries:
-        t = entry.get("type", "")
-        data = entry.get("data") or {}
-        if t == "session.start":
-            session_id = data.get("sessionId")
-            copilot_version = data.get("copilotVersion")
-        if t == "session.model_change":
-            if not model_name:
-                model_name = data.get("newModel")
-
-    # Collect tool results keyed by toolCallId
-    tool_results: dict[str, str] = {}
-    for entry in entries:
-        t = entry.get("type", "")
-        data = entry.get("data") or {}
-        if t == "tool.execution_complete":
-            call_id = data.get("toolCallId", "")
-            if call_id:
-                result = data.get("result") or {}
-                content = result.get("detailedContent") or result.get("content", "")
-                tool_results[call_id] = str(content)
-
-    steps: list[dict] = []
-    step_id = 0
-    total_tool_calls = 0
-    total_prompt = total_completion = total_cached = 0
-
-    pending: dict | None = None
-
-    def _flush_pending() -> None:
-        nonlocal pending
-        if pending is None:
-            return
-        tool_calls: list[dict] = pending.get("tool_calls", [])
-        if tool_calls:
-            results = [
-                {"source_call_id": tc["tool_call_id"],
-                 "content": _truncate(tool_results.get(tc["tool_call_id"], ""))}
-                for tc in tool_calls
-                if tc["tool_call_id"] in tool_results
-            ]
-            if results:
-                pending["observation"] = {"results": results}
-        if not tool_calls:
-            pending.pop("tool_calls", None)
-        steps.append(pending)
-        pending = None
-
-    for entry in entries:
-        t = entry.get("type", "")
-        data = entry.get("data") or {}
-        ts = entry.get("timestamp") or fallback_timestamp
-
-        if t == "user.message":
-            _flush_pending()
-            text = (data.get("content") or "").strip()
-            if text:
-                step_id += 1
-                steps.append({"step_id": step_id, "timestamp": ts,
-                               "source": "user", "message": text})
-
-        elif t == "assistant.message":
-            content = (data.get("content") or "").strip()
-            tool_requests = data.get("toolRequests") or []
-
-            if pending is None:
-                step_id += 1
-                pending = {"step_id": step_id, "timestamp": ts,
-                           "source": "agent", "message": content, "tool_calls": []}
-            elif content:
-                existing = pending.get("message", "")
-                pending["message"] = (existing + "\n" + content).strip()
-
-            for tr in tool_requests:
-                call_id = tr.get("toolCallId", "")
-                name = tr.get("name", "")
-                arguments = tr.get("arguments") or {}
-                pending["tool_calls"].append({
-                    "tool_call_id": call_id,
-                    "function_name": name,
-                    "arguments": arguments,
-                })
-                total_tool_calls += 1
-
-        elif t == "assistant.turn_end":
-            _flush_pending()
-
-        elif t == "session.shutdown":
-            _flush_pending()
-
-    _flush_pending()
-
-    return ParsedTrajectory(
-        session_id=session_id,
-        model_name=model_name,
-        agent_version=copilot_version,
         steps=steps,
         total_prompt_tokens=total_prompt,
         total_completion_tokens=total_completion,
