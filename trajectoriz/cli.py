@@ -194,21 +194,7 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
             traj = tz.parse_copilot_event_trajectory(record.source)
         elif record.agent == "agent_probe":
             hlines.append(f"**Source:** {record.source}")
-            if record.first_msg:
-                hlines.append("**Steps:** 1")
-                steps = [
-                    _render_step(
-                        {
-                            "step_id": 1,
-                            "timestamp": record.timestamp,
-                            "source": "user",
-                            "message": record.first_msg,
-                        }
-                    )
-                ]
-                return "\n".join(hlines), steps
-            hlines.append("\n*Full trajectory parsing not supported for this agent type.*")
-            return "\n".join(hlines), []
+            traj = tz.parse_agent_probe_trajectory(record.source)
         else:
             hlines.append("\n*Full trajectory parsing not supported for this agent type.*")
             return "\n".join(hlines), []

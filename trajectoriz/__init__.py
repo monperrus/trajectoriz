@@ -914,3 +914,108 @@ def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp:
     )
     traj.total_tokens = estimate_trajectory_tokens(traj)
     return traj
+
+
+def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> ParsedTrajectory:
+    """Parse an agent_probe session JSONL trajectory file.
+
+    Token totals come from the "usage" events logged after each completion
+    call (the provider's reported prompt/completion token counts). If a
+    trajectory has no such events, totals fall back to
+    :func:`estimate_trajectory_tokens`.
+    """
+    entries: list[dict] = []
+    with Path(jsonl_path).open(encoding="utf-8") as fh:
+        for raw in fh:
+            raw = raw.strip()
+            if raw:
+                try:
+                    entries.append(json.loads(raw))
+                except json.JSONDecodeError:
+                    continue
+
+    session_id: str | None = None
+    model_name: str | None = None
+    steps: list[dict] = []
+    step_id = 0
+    total_tool_calls = 0
+    total_prompt = total_completion = total_cached = 0
+    saw_usage = False
+
+    pending: dict | None = None
+
+    def _flush_pending() -> None:
+        nonlocal pending
+        if pending is None:
+            return
+        if not pending.get("tool_calls"):
+            pending.pop("tool_calls", None)
+        if not (pending.get("observation") or {}).get("results"):
+            pending.pop("observation", None)
+        steps.append(pending)
+        pending = None
+
+    for entry in entries:
+        t = entry.get("type", "")
+        ts = entry.get("ts") or fallback_timestamp
+
+        if t == "session_start":
+            session_id = entry.get("session_id")
+            model_name = entry.get("model")
+
+        elif t == "user":
+            _flush_pending()
+            text = (entry.get("content") or "").strip()
+            if text:
+                step_id += 1
+                steps.append({"step_id": step_id, "timestamp": ts,
+                               "source": "user", "message": text})
+
+        elif t == "tool_call":
+            if pending is None:
+                step_id += 1
+                pending = {"step_id": step_id, "timestamp": ts,
+                           "source": "agent", "message": "", "tool_calls": []}
+            pending["tool_calls"].append({
+                "tool_call_id": "",
+                "function_name": entry.get("name", ""),
+                "arguments": entry.get("args") or {},
+            })
+            total_tool_calls += 1
+
+        elif t == "tool_result":
+            if pending is not None:
+                obs = pending.setdefault("observation", {"results": []})
+                obs["results"].append({"content": _truncate(str(entry.get("result", "")))})
+
+        elif t == "assistant":
+            text = (entry.get("content") or "").strip()
+            if pending is None:
+                step_id += 1
+                pending = {"step_id": step_id, "timestamp": ts,
+                           "source": "agent", "message": text}
+            else:
+                pending["message"] = text
+            _flush_pending()
+
+        elif t == "usage":
+            saw_usage = True
+            total_prompt += entry.get("prompt_tokens") or 0
+            total_completion += entry.get("completion_tokens") or 0
+            total_cached += entry.get("cached_tokens") or 0
+
+    _flush_pending()
+
+    traj = ParsedTrajectory(
+        session_id=session_id,
+        model_name=model_name,
+        steps=steps,
+        total_prompt_tokens=total_prompt,
+        total_completion_tokens=total_completion,
+        total_cached_tokens=total_cached,
+        total_tool_calls=total_tool_calls,
+    )
+    traj.total_tokens = (
+        (total_prompt + total_completion) if saw_usage else estimate_trajectory_tokens(traj)
+    )
+    return traj
