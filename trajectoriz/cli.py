@@ -234,11 +234,14 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
         hlines.append(f"**Model:** {traj.model_name}")
     if traj.total_tool_calls:
         hlines.append(f"**Tool calls:** {traj.total_tool_calls}")
-    if traj.total_prompt_tokens:
+    if traj.total_prompt_tokens or traj.total_completion_tokens:
         hlines.append(
             f"**Tokens:** {traj.total_prompt_tokens} prompt / "
-            f"{traj.total_completion_tokens} completion"
+            f"{traj.total_completion_tokens} completion / "
+            f"{traj.total_tokens} total"
         )
+    elif traj.total_tokens:
+        hlines.append(f"**Tokens:** ~{traj.total_tokens} (estimated)")
 
     return "\n".join(hlines), [_render_step(s) for s in traj.steps]
 

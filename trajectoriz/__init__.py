@@ -3,6 +3,7 @@
 __version__ = "0.1.0"
 
 import json
+import math
 from dataclasses import dataclass, field
 import os
 import re
@@ -377,7 +378,43 @@ class ParsedTrajectory:
     total_completion_tokens: int = 0
     total_cached_tokens: int = 0
     total_tool_calls: int = 0
+    total_tokens: int = 0
     extra_agent: dict = field(default_factory=dict)
+
+
+def estimate_tokens(value: object) -> int:
+    """Roughly estimate the token count of text or JSON-serializable content.
+
+    Uses the ~4 chars/token heuristic, matching agent-reports-codex.
+    """
+    if value in (None, ""):
+        return 0
+    if isinstance(value, str):
+        text = value
+    else:
+        try:
+            text = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            text = str(value)
+    return max(1, math.ceil(len(text) / 4)) if text else 0
+
+
+def estimate_trajectory_tokens(traj: ParsedTrajectory) -> int:
+    """Estimate total tokens of a trajectory from its steps' text content.
+
+    Used as a fallback for sources that don't report real token usage
+    (e.g. Copilot CLI), summing estimates over messages, reasoning,
+    tool-call arguments, and tool results.
+    """
+    total = 0
+    for step in traj.steps:
+        total += estimate_tokens(step.get("message"))
+        total += estimate_tokens(step.get("reasoning_content"))
+        for tc in step.get("tool_calls", []):
+            total += estimate_tokens(tc.get("arguments"))
+        for res in (step.get("observation") or {}).get("results", []):
+            total += estimate_tokens(res.get("content"))
+    return total
 
 
 def _truncate(text: str, limit: int = 4000) -> str:
@@ -553,7 +590,7 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
                 }
             steps.append(step)
 
-    return ParsedTrajectory(
+    traj = ParsedTrajectory(
         session_id=session_id,
         model_name=model_name,
         agent_version=agent_version,
@@ -563,6 +600,8 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
     )
+    traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
+    return traj
 
 
 def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> ParsedTrajectory:
@@ -696,7 +735,7 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
 
     _flush_pending()
 
-    return ParsedTrajectory(
+    traj = ParsedTrajectory(
         session_id=session_id,
         model_name=model_name,
         agent_version=cli_version,
@@ -706,6 +745,8 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
     )
+    traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
+    return traj
 
 
 def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> ParsedTrajectory:
@@ -816,7 +857,7 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
 
     _flush_pending()
 
-    return ParsedTrajectory(
+    traj = ParsedTrajectory(
         session_id=session_id,
         model_name=model_name,
         agent_version=copilot_version,
@@ -826,6 +867,8 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
     )
+    traj.total_tokens = estimate_trajectory_tokens(traj)
+    return traj
 
 
 def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp: str = "") -> ParsedTrajectory:
@@ -862,10 +905,12 @@ def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp:
             steps.append({"step_id": step_id, "timestamp": ts,
                            "source": "agent", "message": asst_resp.strip()})
 
-    return ParsedTrajectory(
+    traj = ParsedTrajectory(
         steps=steps,
         extra_agent={
             "copilot_repository": repository or "",
             "copilot_summary": summary or "",
         },
     )
+    traj.total_tokens = estimate_trajectory_tokens(traj)
+    return traj

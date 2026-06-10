@@ -321,3 +321,72 @@ def test_iter_opencode_sessions_with_data(tmp_path):
     assert s.tokens_cache_read == 50
     assert s.tokens_cache_write == 30
     assert s.first_prompt == "fix the bug"
+
+
+def test_estimate_tokens():
+    from trajectoriz import estimate_tokens
+
+    assert estimate_tokens(None) == 0
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("a" * 4) == 1
+    assert estimate_tokens("a" * 5) == 2
+    # JSON-serialized: '{"key": "value"}' is 16 chars -> ceil(16/4) == 4
+    assert estimate_tokens({"key": "value"}) == 4
+
+
+def test_parse_claude_trajectory_total_tokens(tmp_path):
+    import json
+
+    from trajectoriz import parse_claude_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "sessionId": "s1",
+                     "message": {"content": "hello"}}) + "\n"
+        + json.dumps({"type": "assistant", "message": {
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "hi there"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }}) + "\n"
+    )
+    traj = parse_claude_trajectory(f)
+    assert traj.total_prompt_tokens == 10
+    assert traj.total_completion_tokens == 5
+    assert traj.total_tokens == 15
+
+
+def test_parse_claude_trajectory_total_tokens_estimated_without_usage(tmp_path):
+    import json
+
+    from trajectoriz import estimate_tokens, parse_claude_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "sessionId": "s1",
+                     "message": {"content": "hello"}}) + "\n"
+        + json.dumps({"type": "assistant", "message": {
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "hi there"}],
+        }}) + "\n"
+    )
+    traj = parse_claude_trajectory(f)
+    assert traj.total_prompt_tokens == 0
+    assert traj.total_completion_tokens == 0
+    assert traj.total_tokens == estimate_tokens("hello") + estimate_tokens("hi there")
+
+
+def test_parse_copilot_event_trajectory_total_tokens(tmp_path):
+    import json
+
+    from trajectoriz import estimate_tokens, parse_copilot_event_trajectory
+
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        json.dumps({"type": "session.start", "data": {"sessionId": "s1"}}) + "\n"
+        + json.dumps({"type": "user.message", "data": {"content": "fix the bug"}}) + "\n"
+        + json.dumps({"type": "assistant.message", "data": {"content": "fixed it"}}) + "\n"
+        + json.dumps({"type": "session.shutdown", "data": {}}) + "\n"
+    )
+    traj = parse_copilot_event_trajectory(f)
+    assert traj.total_prompt_tokens == 0
+    assert traj.total_tokens == estimate_tokens("fix the bug") + estimate_tokens("fixed it")
