@@ -6,10 +6,11 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 import trajectoriz as tz
 
@@ -155,6 +156,95 @@ def _all_records() -> Iterator[TrajRecord]:
             )
 
 
+def _cache_dir(cache_dir=None) -> Path:
+    d = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "trajectoriz"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _cached_parse(cache_key: str, mtime: float, parse_fn, cache_dir=None) -> tz.ParsedTrajectory:
+    """Return parse_fn(), using an mtime-keyed pickle cache to avoid re-parsing."""
+    cpath = _cache_dir(cache_dir) / f"{hashlib.sha256(cache_key.encode()).hexdigest()}.pkl"
+    if cpath.exists():
+        try:
+            with cpath.open("rb") as f:
+                cached_mtime, traj = pickle.load(f)
+            if cached_mtime == mtime:
+                return traj
+        except Exception:
+            pass
+    traj = parse_fn()
+    try:
+        with cpath.open("wb") as f:
+            pickle.dump((mtime, traj), f)
+    except OSError:
+        pass
+    return traj
+
+
+def _parse_record(record: TrajRecord, cache_dir=None) -> Optional[tz.ParsedTrajectory]:
+    """Parse a trajectory record into a ParsedTrajectory, or None if unsupported."""
+    if isinstance(record.source, Path):
+        path = record.source
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        parsers = {
+            "claude": tz.parse_claude_trajectory,
+            "codex": tz.parse_codex_trajectory,
+            "copilot": tz.parse_copilot_event_trajectory,
+            "agent_probe": tz.parse_agent_probe_trajectory,
+        }
+        parse_fn = parsers.get(record.agent)
+        if parse_fn is None:
+            return None
+        return _cached_parse(f"{record.agent}:{path}", mtime, lambda: parse_fn(path), cache_dir)
+
+    if isinstance(record.source, dict) and record.source.get("type") == "copilot_db":
+        db_path = Path(record.source["db_path"])
+        session_id = record.source["session_id"]
+        try:
+            mtime = db_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        return _cached_parse(
+            f"copilot_db:{db_path}:{session_id}", mtime,
+            lambda: tz.parse_copilot_trajectory(db_path, session_id), cache_dir,
+        )
+
+    return None
+
+
+def _step_search_blobs(step: dict) -> list[str]:
+    """Return the searchable text fields of a step (message, reasoning, tool calls, results)."""
+    blobs: list[str] = []
+    if step.get("message"):
+        blobs.append(step["message"])
+    if step.get("reasoning_content"):
+        blobs.append(step["reasoning_content"])
+    for tc in step.get("tool_calls", []):
+        blobs.append(json.dumps(tc.get("arguments", {}), ensure_ascii=False))
+    for res in (step.get("observation") or {}).get("results", []):
+        blobs.append(res.get("content", ""))
+    return blobs
+
+
+def _make_snippet(text: str, query: str, context: int = 50) -> str:
+    """Return a short single-line excerpt of text around the first match of query."""
+    idx = text.lower().find(query.lower())
+    if idx == -1:
+        return ""
+    start = max(0, idx - context)
+    end = min(len(text), idx + len(query) + context)
+    snippet = text[start:end].replace("\n", " ").strip()
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
 def _render_step(step: dict) -> str:
     lines: list[str] = []
     role = "USER" if step["source"] == "user" else "AGENT"
@@ -185,25 +275,12 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
     if record.timestamp:
         hlines.append(f"**Date:** {record.timestamp[:19]}")
 
-    if isinstance(record.source, Path):
-        if record.agent == "claude":
-            traj = tz.parse_claude_trajectory(record.source)
-        elif record.agent == "codex":
-            traj = tz.parse_codex_trajectory(record.source)
-        elif record.agent == "copilot":
-            traj = tz.parse_copilot_event_trajectory(record.source)
-        elif record.agent == "agent_probe":
-            hlines.append(f"**Source:** {record.source}")
-            traj = tz.parse_agent_probe_trajectory(record.source)
-        else:
-            hlines.append("\n*Full trajectory parsing not supported for this agent type.*")
-            return "\n".join(hlines), []
-    elif isinstance(record.source, dict):
-        src_type = record.source["type"]
-        if src_type == "copilot_db":
-            db_path = Path(record.source["db_path"])
-            traj = tz.parse_copilot_trajectory(db_path, record.source["session_id"])
-        else:
+    if record.agent == "agent_probe" and isinstance(record.source, Path):
+        hlines.append(f"**Source:** {record.source}")
+
+    traj = _parse_record(record)
+    if traj is None:
+        if isinstance(record.source, dict):
             hlines.append(f"**Session ID:** {record.source.get('session_id', '')}")
             if record.source.get("model"):
                 hlines.append(f"**Model:** {record.source['model']}")
@@ -211,8 +288,8 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
             if d:
                 hlines.append(f"**Directory:** {d}")
             hlines.append("\n*Full trajectory parsing not available for this agent type.*")
-            return "\n".join(hlines), []
-    else:
+        else:
+            hlines.append("\n*Full trajectory parsing not supported for this agent type.*")
         return "\n".join(hlines), []
 
     hlines.append(f"**Steps:** {len(traj.steps)}")
@@ -285,6 +362,11 @@ def cmd_list(args) -> None:
 def cmd_search(args) -> None:
     query = args.query.lower()
     source = _all_records() if args.all else _local_records(os.getcwd())
+
+    if args.content:
+        cmd_search_content(args, query, source)
+        return
+
     records = [
         rec
         for rec in source
@@ -307,6 +389,39 @@ def cmd_search(args) -> None:
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
+def cmd_search_content(args, query: str, source: Iterable[TrajRecord]) -> None:
+    """Search the full content of each trajectory's steps for `query`."""
+    records = sorted(source, key=lambda r: r.timestamp, reverse=True)
+
+    matches: list[tuple[TrajRecord, int, str]] = []
+    for rec in records:
+        traj = _parse_record(rec)
+        if traj is None:
+            continue
+        for step in traj.steps:
+            for blob in _step_search_blobs(step):
+                if query in blob.lower():
+                    matches.append((rec, step["step_id"], _make_snippet(blob, query)))
+                    break
+
+    if not matches:
+        print(f"No trajectories found matching `{args.query}` in their content.")
+        return
+
+    header = (
+        f"## Content search: `{args.query}` — {len(matches)} match(es)\n\n"
+        "| ID | Agent | Date | Step | Snippet |\n"
+        "|---|---|---|---|---|"
+    )
+    rows = []
+    for rec, step_id, snippet in matches:
+        date = rec.timestamp[:10] if rec.timestamp else "—"
+        snippet = snippet.replace("|", "\\|").replace("\n", " ")
+        rows.append(f"| `{rec.id}` | {rec.agent} | {date} | {step_id} | {snippet} |")
+    _paginate_items(rows, args.page, args.page_size, header, "matches",
+                    footer="\nUse `trajectoriz-cli show <id> --step N` to jump to a step.")
+
+
 def cmd_show(args) -> None:
     target = args.id
     record: Optional[TrajRecord] = None
@@ -320,7 +435,15 @@ def cmd_show(args) -> None:
         sys.exit(1)
 
     header, steps = _trajectory_header_and_steps(record)
-    _paginate_items(steps, args.page, args.page_size, header, "steps")
+
+    page = args.page
+    if args.step is not None:
+        if args.step < 1 or args.step > len(steps):
+            print(f"Error: step {args.step} out of range (1–{len(steps)}).", file=sys.stderr)
+            sys.exit(1)
+        page = math.ceil(args.step / args.page_size)
+
+    _paginate_items(steps, page, args.page_size, header, "steps")
 
 
 def _is_single_message_only(record: TrajRecord, message: str) -> bool:
@@ -418,6 +541,10 @@ def main() -> None:
         help=f"Trajectories per page (default: {DEFAULT_LIST_PAGE_SIZE})",
     )
     p_search.add_argument("--all", action="store_true", help="Search across all agents/directories.")
+    p_search.add_argument(
+        "--content", "--grep", action="store_true",
+        help="Search step content (messages, reasoning, tool calls/results), not just the first message.",
+    )
     p_search.set_defaults(func=cmd_search)
 
     # show
@@ -433,6 +560,10 @@ def main() -> None:
     p_show.add_argument(
         "--page-size", type=int, default=DEFAULT_SHOW_PAGE_SIZE, metavar="N",
         help=f"Messages (steps) per page (default: {DEFAULT_SHOW_PAGE_SIZE})",
+    )
+    p_show.add_argument(
+        "--step", type=int, default=None, metavar="N",
+        help="Jump directly to the page containing step N.",
     )
     p_show.set_defaults(func=cmd_show)
 
