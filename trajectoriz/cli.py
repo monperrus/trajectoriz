@@ -245,7 +245,16 @@ def _make_snippet(text: str, query: str, context: int = 50) -> str:
     return snippet
 
 
-def _render_step(step: dict) -> str:
+def _record_source_dir(rec: TrajRecord) -> str:
+    """Return the working directory associated with a record, for display."""
+    if isinstance(rec.source, Path):
+        return str(rec.source.parent)
+    if isinstance(rec.source, dict):
+        return rec.source.get("dir") or rec.source.get("cwd") or "—"
+    return "—"
+
+
+def _render_step(step: dict, full: bool = False) -> str:
     lines: list[str] = []
     role = "USER" if step["source"] == "user" else "AGENT"
     ts_suffix = f" *{step['timestamp'][:19]}*" if step.get("timestamp") else ""
@@ -255,19 +264,19 @@ def _render_step(step: dict) -> str:
         lines.append("")
     for tc in step.get("tool_calls", []):
         args_str = json.dumps(tc.get("arguments", {}), indent=2)
-        if len(args_str) > 600:
+        if not full and len(args_str) > 600:
             args_str = args_str[:600] + "\n…"
         lines.append(f"**Tool call:** `{tc['function_name']}`")
         lines.append(f"```json\n{args_str}\n```\n")
     for res in (step.get("observation") or {}).get("results", []):
         content = res.get("content", "")
-        if len(content) > 1000:
+        if not full and len(content) > 1000:
             content = content[:1000] + "\n…"
         lines.append(f"**Tool result:**\n```\n{content}\n```\n")
     return "\n".join(lines)
 
 
-def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
+def _trajectory_header_and_steps(record: TrajRecord, full: bool = False) -> tuple[str, list[str]]:
     """Return (header_markdown, list_of_rendered_steps)."""
     hlines: list[str] = []
     hlines.append(f"# Trajectory `{record.id}`")
@@ -306,7 +315,7 @@ def _trajectory_header_and_steps(record: TrajRecord) -> tuple[str, list[str]]:
     elif traj.total_tokens:
         hlines.append(f"**Tokens:** ~{traj.total_tokens} (estimated)")
 
-    return "\n".join(hlines), [_render_step(s) for s in traj.steps]
+    return "\n".join(hlines), [_render_step(s, full=full) for s in traj.steps]
 
 
 def _paginate_items(
@@ -337,36 +346,59 @@ def _paginate_items(
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 
-def _record_row(rec: TrajRecord) -> str:
+def _record_row(rec: TrajRecord, show_dir: bool = False) -> str:
     date = rec.timestamp[:10] if rec.timestamp else "—"
     snippet = (rec.first_msg or "")[:80].replace("|", "\\|").replace("\n", " ")
+    if show_dir:
+        d = _record_source_dir(rec).replace("|", "\\|")
+        return f"| `{rec.id}` | {rec.agent} | {date} | {d} | {snippet} |"
     return f"| `{rec.id}` | {rec.agent} | {date} | {snippet} |"
 
 
 def cmd_list(args) -> None:
     source = _all_records() if args.all else _local_records(os.getcwd())
     records = sorted(source, key=lambda r: r.timestamp, reverse=True)
+
+    if args.since:
+        records = [r for r in records if r.timestamp[:10] >= args.since]
+    if args.date:
+        records = [r for r in records if r.timestamp[:10] == args.date]
+
     if not records:
         print("No trajectories found.")
         return
-    header = (
-        f"## All trajectories ({len(records)} total)\n\n"
-        "| ID | Agent | Date | First message |\n"
-        "|---|---|---|---|"
-    )
-    rows = [_record_row(r) for r in records]
+
+    show_dir = args.all
+    if show_dir:
+        header = (
+            f"## All trajectories ({len(records)} total)\n\n"
+            "| ID | Agent | Date | Directory | First message |\n"
+            "|---|---|---|---|---|"
+        )
+    else:
+        header = (
+            f"## Trajectories in {os.getcwd()} ({len(records)} total)\n\n"
+            "| ID | Agent | Date | First message |\n"
+            "|---|---|---|---|"
+        )
+    rows = [_record_row(r, show_dir=show_dir) for r in records]
     _paginate_items(rows, args.page, args.page_size, header, "trajectories",
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
 def cmd_search(args) -> None:
     query = args.query.lower()
-    source = _all_records() if args.all else _local_records(os.getcwd())
+    # search defaults to all trajectories; --local restricts to cwd
+    source = _local_records(os.getcwd()) if args.local else _all_records()
 
-    if args.content:
+    if args.fast:
+        _cmd_search_fast(args, query, source)
+    else:
         cmd_search_content(args, query, source)
-        return
 
+
+def _cmd_search_fast(args, query: str, source: Iterable[TrajRecord]) -> None:
+    """Search only first message, agent name, and ID (no trajectory parsing)."""
     records = [
         rec
         for rec in source
@@ -395,13 +427,18 @@ def cmd_search_content(args, query: str, source: Iterable[TrajRecord]) -> None:
 
     matches: list[tuple[TrajRecord, int, str]] = []
     for rec in records:
+        # always check first message first (no parse needed)
+        if query in (rec.first_msg or "").lower():
+            snippet = _make_snippet(rec.first_msg or "", args.query)
+            matches.append((rec, 1, snippet))
+            continue
         traj = _parse_record(rec)
         if traj is None:
             continue
         for step in traj.steps:
             for blob in _step_search_blobs(step):
                 if query in blob.lower():
-                    matches.append((rec, step["step_id"], _make_snippet(blob, query)))
+                    matches.append((rec, step["step_id"], _make_snippet(blob, args.query)))
                     break
 
     if not matches:
@@ -409,7 +446,7 @@ def cmd_search_content(args, query: str, source: Iterable[TrajRecord]) -> None:
         return
 
     header = (
-        f"## Content search: `{args.query}` — {len(matches)} match(es)\n\n"
+        f"## Search: `{args.query}` — {len(matches)} match(es)\n\n"
         "| ID | Agent | Date | Step | Snippet |\n"
         "|---|---|---|---|---|"
     )
@@ -434,7 +471,7 @@ def cmd_show(args) -> None:
         print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
         sys.exit(1)
 
-    header, steps = _trajectory_header_and_steps(record)
+    header, steps = _trajectory_header_and_steps(record, full=args.full)
 
     page = args.page
     if args.step is not None:
@@ -526,13 +563,21 @@ def main() -> None:
         "--page-size", type=int, default=DEFAULT_LIST_PAGE_SIZE, metavar="N",
         help=f"Trajectories per page (default: {DEFAULT_LIST_PAGE_SIZE})",
     )
-    p_list.add_argument("--all", action="store_true", help="Include all agents/directories.")
+    p_list.add_argument("--all", action="store_true", help="Include all agents/directories (adds Directory column).")
+    p_list.add_argument(
+        "--since", metavar="YYYY-MM-DD",
+        help="Only show trajectories on or after this date.",
+    )
+    p_list.add_argument(
+        "--date", metavar="YYYY-MM-DD",
+        help="Only show trajectories from exactly this date.",
+    )
     p_list.set_defaults(func=cmd_list)
 
     # search
     p_search = sub.add_parser(
         "search",
-        help="Search trajectories by keyword (current directory by default).",
+        help="Search trajectories by keyword (all directories by default).",
     )
     p_search.add_argument("query", help="Search term (case-insensitive substring).")
     p_search.add_argument("--page", type=int, default=1, metavar="N")
@@ -540,10 +585,17 @@ def main() -> None:
         "--page-size", type=int, default=DEFAULT_LIST_PAGE_SIZE, metavar="N",
         help=f"Trajectories per page (default: {DEFAULT_LIST_PAGE_SIZE})",
     )
-    p_search.add_argument("--all", action="store_true", help="Search across all agents/directories.")
+    p_search.add_argument(
+        "--local", action="store_true",
+        help="Restrict search to the current directory (default searches all).",
+    )
+    p_search.add_argument(
+        "--fast", action="store_true",
+        help="Search only the first message and metadata (no trajectory parsing). Much faster but misses tool call content.",
+    )
     p_search.add_argument(
         "--content", "--grep", action="store_true",
-        help="Search step content (messages, reasoning, tool calls/results), not just the first message.",
+        help="(Deprecated alias — content search is now the default. Use --fast to skip it.)",
     )
     p_search.set_defaults(func=cmd_search)
 
@@ -564,6 +616,10 @@ def main() -> None:
     p_show.add_argument(
         "--step", type=int, default=None, metavar="N",
         help="Jump directly to the page containing step N.",
+    )
+    p_show.add_argument(
+        "--full", "--no-truncate", action="store_true",
+        help="Show complete tool call arguments and results without truncation.",
     )
     p_show.set_defaults(func=cmd_show)
 
