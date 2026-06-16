@@ -134,7 +134,7 @@ def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "cl-abc" in out
-    assert "Content search" in out
+    assert "## Search:" in out
     # The match is in step 2 (tool result observation) or step 3 (closing message).
     assert "| 2 |" in out or "| 3 |" in out
 
@@ -165,7 +165,7 @@ def test_cmd_show_step_jumps_to_correct_page(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
 
     # 3 steps total, page_size=2 -> step 3 should land on page 2.
-    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=3)
+    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=3, full=False)
     cli.cmd_show(args)
 
     out = capsys.readouterr().out
@@ -181,7 +181,7 @@ def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
     monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
 
-    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=99)
+    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=99, full=False)
     with pytest.raises(SystemExit):
         cli.cmd_show(args)
 
