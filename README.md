@@ -99,8 +99,6 @@ trajectoriz-cli blame src/main.py
 # | 2026-05-31T11:31:07 | agent_probe | ap-f5515937  | write | +55 lines   | run checklist ...     |
 # | 2026-06-01T14:22:00 | claude      | cl-e20eee97  | edit  | +13/-9 lines| add tests and doc ... |
 
-# Blame across all agents and directories (not just the current project)
-trajectoriz-cli blame src/main.py --all
 ```
 
 ## License
