@@ -87,6 +87,20 @@ trajectoriz-cli search foo --fast
 
 # Show a trajectory
 trajectoriz-cli show cl-1234abcd
+
+# Show the last page of a long trajectory
+trajectoriz-cli show cl-1234abcd --last
+
+# Blame a file — show every agent edit in chronological order with line deltas
+trajectoriz-cli blame src/main.py
+
+# Sample output:
+# | Timestamp           | Agent       | Traj ID      | Op    | Delta       | First message         |
+# | 2026-05-31T11:31:07 | agent_probe | ap-f5515937  | write | +55 lines   | run checklist ...     |
+# | 2026-06-01T14:22:00 | claude      | cl-e20eee97  | edit  | +13/-9 lines| add tests and doc ... |
+
+# Blame across all agents and directories (not just the current project)
+trajectoriz-cli blame src/main.py --all
 ```
 
 ## License
