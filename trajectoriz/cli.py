@@ -360,6 +360,233 @@ def _paginate_items(
         print(f"\n<!-- {remaining} more page(s) — run with --page {page + 1} to continue -->")
 
 
+# ── Blame helpers ─────────────────────────────────────────────────────────────
+
+
+def _count_lines(text: str) -> int:
+    return len(text.splitlines()) if text else 0
+
+
+def _blame_edits_from_tool(
+    function_name: str, arguments: dict
+) -> list[tuple[str, str, int, int, int, int]]:
+    """Return list of (file_path, op, lines_added, lines_removed, chars_added, chars_removed)."""
+    fn = function_name.lower()
+
+    def _write(path, content):
+        c = str(content)
+        return (path, "write", _count_lines(c), 0, len(c), 0)
+
+    def _edit(path, old, new):
+        o, n = str(old), str(new)
+        return (path, "edit", _count_lines(n), _count_lines(o), len(n), len(o))
+
+    if fn in ("write", "write_file", "create_file", "writefile", "overwrite_file"):
+        path = arguments.get("file_path") or arguments.get("path") or ""
+        content = arguments.get("content") or arguments.get("file_text") or ""
+        if path:
+            return [_write(path, content)]
+
+    if fn in ("edit", "editfile", "edit_file"):
+        path = arguments.get("file_path") or arguments.get("path") or ""
+        old = arguments.get("old_string") or arguments.get("old_str") or ""
+        new = arguments.get("new_string") or arguments.get("new_str") or ""
+        if path:
+            return [_edit(path, old, new)]
+
+    if fn in ("multiedit", "multi_edit"):
+        path = arguments.get("file_path") or arguments.get("path") or ""
+        edits = arguments.get("edits") or []
+        if path and edits:
+            la = lr = ca = cr = 0
+            for e in edits:
+                o = str(e.get("old_string") or e.get("old_str") or "")
+                n = str(e.get("new_string") or e.get("new_str") or "")
+                la += _count_lines(n); lr += _count_lines(o)
+                ca += len(n); cr += len(o)
+            return [(path, "edit", la, lr, ca, cr)]
+
+    if fn in ("str_replace_based_edit_tool", "str_replace_editor", "str_replace_tool"):
+        path = str(arguments.get("path") or "")
+        command = str(arguments.get("command") or "")
+        if command in ("create", "write", "create_file"):
+            content = str(arguments.get("file_text") or arguments.get("content") or "")
+            if path:
+                return [_write(path, content)]
+        if command == "str_replace":
+            old = str(arguments.get("old_str") or "")
+            new = str(arguments.get("new_str") or "")
+            if path:
+                return [_edit(path, old, new)]
+        if command == "insert":
+            new = str(arguments.get("new_str") or "")
+            if path:
+                return [(path, "edit", _count_lines(new), 0, len(new), 0)]
+
+    if fn == "apply_patch":
+        patch = str(arguments.get("patch") or "")
+        if patch:
+            return _parse_patch_blame(patch)
+
+    return []
+
+
+def _parse_patch_blame(patch: str) -> list[tuple[str, str, int, int, int, int]]:
+    """Parse a patch string into (path, op, la, lr, ca, cr) per file touched."""
+    results: list[tuple[str, str, int, int, int, int]] = []
+
+    # Codex custom format: *** Update File: / *** Add File: / *** Delete File:
+    if any(m in patch for m in ("*** Begin Patch", "*** Update File:", "*** Add File:", "*** Delete File:")):
+        current_file: str | None = None
+        current_op = "edit"
+        la = lr = ca = cr = 0
+        for line in patch.splitlines():
+            for prefix, op in (
+                ("*** Update File:", "edit"),
+                ("*** Add File:", "write"),
+                ("*** Delete File:", "delete"),
+            ):
+                if line.startswith(prefix):
+                    if current_file is not None:
+                        results.append((current_file, current_op, la, lr, ca, cr))
+                    current_file = line[len(prefix):].strip()
+                    current_op = op; la = lr = ca = cr = 0
+                    break
+            else:
+                if current_file and line.startswith("+") and not line.startswith("+++"):
+                    la += 1; ca += len(line) - 1
+                elif current_file and line.startswith("-") and not line.startswith("---"):
+                    lr += 1; cr += len(line) - 1
+        if current_file is not None:
+            results.append((current_file, current_op, la, lr, ca, cr))
+        if results:
+            return results
+
+    # Standard unified diff (--- a/path / +++ b/path)
+    import re as _re
+    current_file = None
+    current_op = "edit"
+    la = lr = ca = cr = 0
+    for line in patch.splitlines():
+        if line.startswith("diff --git "):
+            if current_file is not None and (la or lr):
+                results.append((current_file, current_op, la, lr, ca, cr))
+            current_file = None; current_op = "edit"; la = lr = ca = cr = 0
+        elif line.startswith("--- "):
+            path_part = line[4:].split("\t")[0].strip()
+            if path_part != "/dev/null":
+                current_file = _re.sub(r"^a/", "", path_part)
+                current_op = "edit"
+            else:
+                current_op = "write"
+            la = lr = ca = cr = 0
+        elif line.startswith("+++ "):
+            path_part = line[4:].split("\t")[0].strip()
+            if path_part != "/dev/null":
+                current_file = _re.sub(r"^b/", "", path_part)
+        elif current_file and line.startswith("+") and not line.startswith("+++"):
+            la += 1; ca += len(line) - 1
+        elif current_file and line.startswith("-") and not line.startswith("---"):
+            lr += 1; cr += len(line) - 1
+    if current_file is not None and (la or lr):
+        results.append((current_file, current_op, la, lr, ca, cr))
+    return results
+
+
+def _path_matches_target(tool_path: str, target_abs: Path) -> bool:
+    tp = (tool_path or "").strip()
+    if not tp:
+        return False
+    p = Path(tp)
+    if p.is_absolute():
+        return p == target_abs
+    # relative: check as suffix of the absolute target
+    tp_clean = tp.lstrip("./").lstrip("/")
+    target_str = str(target_abs)
+    return target_str.endswith("/" + tp_clean)
+
+
+@dataclass
+class BlameEntry:
+    timestamp: str
+    agent: str
+    traj_id: str
+    traj_first_msg: str
+    op: str
+    lines_added: int
+    lines_removed: int
+    chars_added: int
+    chars_removed: int
+
+
+def _blame_delta(e: BlameEntry) -> str:
+    la, lr = e.lines_added, e.lines_removed
+    if la or lr:
+        parts = ([f"+{la}"] if la else []) + ([f"-{lr}"] if lr else [])
+        return "/".join(parts) + " lines"
+    ca, cr = e.chars_added, e.chars_removed
+    if ca or cr:
+        parts = ([f"+{ca}"] if ca else []) + ([f"-{cr}"] if cr else [])
+        return "/".join(parts) + " chars"
+    return "~"
+
+
+def cmd_blame(args) -> None:
+    target = Path(args.file).resolve()
+    source = _all_records() if args.all else _local_records(os.getcwd())
+    records = sorted(source, key=lambda r: r.timestamp)  # chronological order
+
+    entries: list[BlameEntry] = []
+    for rec in records:
+        traj = _parse_record(rec)
+        if traj is None:
+            continue
+        for step in traj.steps:
+            if step["source"] != "agent":
+                continue
+            for tc in step.get("tool_calls", []):
+                for file_path, op, la, lr, ca, cr in _blame_edits_from_tool(
+                    tc["function_name"], tc.get("arguments") or {}
+                ):
+                    if _path_matches_target(file_path, target):
+                        entries.append(BlameEntry(
+                            timestamp=step.get("timestamp") or rec.timestamp,
+                            agent=rec.agent,
+                            traj_id=rec.id,
+                            traj_first_msg=(rec.first_msg or "")[:60],
+                            op=op,
+                            lines_added=la,
+                            lines_removed=lr,
+                            chars_added=ca,
+                            chars_removed=cr,
+                        ))
+
+    try:
+        display_path = "~/" + str(target.relative_to(Path.home()))
+    except ValueError:
+        display_path = str(target)
+
+    if not entries:
+        print(f"No agent edits found for `{display_path}`.")
+        return
+
+    header = (
+        f"## Blame: `{display_path}` — {len(entries)} agent edit(s)\n\n"
+        "| Timestamp | Agent | Traj ID | Op | Delta | First message |\n"
+        "|---|---|---|---|---|---|"
+    )
+    rows = []
+    for e in entries:
+        ts = e.timestamp[:19] if e.timestamp else "—"
+        msg = (e.traj_first_msg or "").replace("|", "\\|").replace("\n", " ")
+        rows.append(
+            f"| {ts} | {e.agent} | `{e.traj_id}` | {e.op} | {_blame_delta(e)} | {msg} |"
+        )
+    page = -1 if args.last else args.page
+    _paginate_items(rows, page, args.page_size, header, "edits",
+                    footer="\nUse `trajectoriz-cli show <id>` to view the full trajectory.")
+
+
 # ── Commands ──────────────────────────────────────────────────────────────────
 
 
@@ -648,6 +875,24 @@ def main() -> None:
         help="Show complete tool call arguments and results without truncation.",
     )
     p_show.set_defaults(func=cmd_show)
+
+    # blame
+    p_blame = sub.add_parser(
+        "blame",
+        help="Show which agent edits touched a file, in chronological order.",
+    )
+    p_blame.add_argument("file", help="Path to the file to blame.")
+    p_blame.add_argument("--page", type=int, default=1, metavar="N")
+    p_blame.add_argument(
+        "--page-size", type=int, default=DEFAULT_LIST_PAGE_SIZE, metavar="N",
+        help=f"Edits per page (default: {DEFAULT_LIST_PAGE_SIZE})",
+    )
+    p_blame.add_argument("--last", action="store_true", help="Jump to the last page.")
+    p_blame.add_argument(
+        "--all", action="store_true",
+        help="Search across all agents/directories (default: local project only).",
+    )
+    p_blame.set_defaults(func=cmd_blame)
 
     # delete
     p_delete = sub.add_parser(
