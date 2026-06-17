@@ -1,6 +1,7 @@
 LICENSE
 README.md
 pyproject.toml
+tests/test_cli.py
 tests/test_trajectoriz.py
 trajectoriz/__init__.py
 trajectoriz/cli.py

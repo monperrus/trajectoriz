@@ -70,6 +70,25 @@ for session_id, updated_at_ms, model_json, directory, first_prompt in iter_openc
     print(session_id, first_prompt)
 ```
 
+## CLI
+
+```bash
+# List trajectories in the current directory
+trajectoriz-cli list
+
+# Search all trajectories for a keyword
+trajectoriz-cli search raven
+
+# OR search (grep syntax) — matches any of the terms
+trajectoriz-cli search "theraven\|raven\|password"
+
+# Full-content search (default) or fast metadata-only search
+trajectoriz-cli search foo --fast
+
+# Show a trajectory
+trajectoriz-cli show cl-1234abcd
+```
+
 ## License
 
 MIT

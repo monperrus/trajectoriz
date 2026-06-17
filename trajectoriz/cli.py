@@ -230,13 +230,28 @@ def _step_search_blobs(step: dict) -> list[str]:
     return blobs
 
 
-def _make_snippet(text: str, query: str, context: int = 50) -> str:
-    """Return a short single-line excerpt of text around the first match of query."""
-    idx = text.lower().find(query.lower())
-    if idx == -1:
+def _parse_terms(query: str) -> list[str]:
+    r"""Split a grep-style OR query on \| into individual lowercase terms."""
+    return [t.lower() for t in query.split(r"\|") if t]
+
+
+def _matches_any(text: str, terms: list[str]) -> bool:
+    tl = text.lower()
+    return any(term in tl for term in terms)
+
+
+def _make_snippet(text: str, terms: list[str], context: int = 50) -> str:
+    """Return a short single-line excerpt around the first match of any term."""
+    tl = text.lower()
+    best_idx, best_len = -1, 0
+    for term in terms:
+        idx = tl.find(term)
+        if idx != -1 and (best_idx == -1 or idx < best_idx):
+            best_idx, best_len = idx, len(term)
+    if best_idx == -1:
         return ""
-    start = max(0, idx - context)
-    end = min(len(text), idx + len(query) + context)
+    start = max(0, best_idx - context)
+    end = min(len(text), best_idx + best_len + context)
     snippet = text[start:end].replace("\n", " ").strip()
     if start > 0:
         snippet = "…" + snippet
@@ -387,24 +402,24 @@ def cmd_list(args) -> None:
 
 
 def cmd_search(args) -> None:
-    query = args.query.lower()
+    terms = _parse_terms(args.query)
     # search defaults to all trajectories; --local restricts to cwd
     source = _local_records(os.getcwd()) if args.local else _all_records()
 
     if args.fast:
-        _cmd_search_fast(args, query, source)
+        _cmd_search_fast(args, terms, source)
     else:
-        cmd_search_content(args, query, source)
+        cmd_search_content(args, terms, source)
 
 
-def _cmd_search_fast(args, query: str, source: Iterable[TrajRecord]) -> None:
+def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> None:
     """Search only first message, agent name, and ID (no trajectory parsing)."""
     records = [
         rec
         for rec in source
-        if query in (rec.first_msg or "").lower()
-        or query in rec.id.lower()
-        or query in rec.agent.lower()
+        if _matches_any(rec.first_msg or "", terms)
+        or _matches_any(rec.id, terms)
+        or _matches_any(rec.agent, terms)
     ]
     records.sort(key=lambda r: r.timestamp, reverse=True)
 
@@ -421,15 +436,15 @@ def _cmd_search_fast(args, query: str, source: Iterable[TrajRecord]) -> None:
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
-def cmd_search_content(args, query: str, source: Iterable[TrajRecord]) -> None:
-    """Search the full content of each trajectory's steps for `query`."""
+def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord]) -> None:
+    """Search the full content of each trajectory's steps for any of the given terms."""
     records = sorted(source, key=lambda r: r.timestamp, reverse=True)
 
     matches: list[tuple[TrajRecord, int, str]] = []
     for rec in records:
         # always check first message first (no parse needed)
-        if query in (rec.first_msg or "").lower():
-            snippet = _make_snippet(rec.first_msg or "", args.query)
+        if _matches_any(rec.first_msg or "", terms):
+            snippet = _make_snippet(rec.first_msg or "", terms)
             matches.append((rec, 1, snippet))
             continue
         traj = _parse_record(rec)
@@ -437,8 +452,8 @@ def cmd_search_content(args, query: str, source: Iterable[TrajRecord]) -> None:
             continue
         for step in traj.steps:
             for blob in _step_search_blobs(step):
-                if query in blob.lower():
-                    matches.append((rec, step["step_id"], _make_snippet(blob, args.query)))
+                if _matches_any(blob, terms):
+                    matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
                     break
 
     if not matches:

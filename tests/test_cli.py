@@ -39,16 +39,49 @@ def _write_claude_trajectory(path):
 
 
 def test_make_snippet_no_match():
-    assert cli._make_snippet("hello world", "xyz") == ""
+    assert cli._make_snippet("hello world", ["xyz"]) == ""
 
 
 def test_make_snippet_with_context():
     text = "a" * 60 + "needle" + "b" * 60
-    snippet = cli._make_snippet(text, "needle")
+    snippet = cli._make_snippet(text, ["needle"])
     assert "needle" in snippet
     assert snippet.startswith("…")
     assert snippet.endswith("…")
     assert len(snippet) < len(text)
+
+
+def test_make_snippet_or_picks_first():
+    text = "alpha is here and beta is further along"
+    snippet = cli._make_snippet(text, ["beta", "alpha"])
+    assert "alpha" in snippet
+
+
+# ── _parse_terms ────────────────────────────────────────────────────────────
+
+
+def test_parse_terms_single():
+    assert cli._parse_terms("foo") == ["foo"]
+
+
+def test_parse_terms_or():
+    assert cli._parse_terms(r"foo\|bar\|baz") == ["foo", "bar", "baz"]
+
+
+def test_parse_terms_lowercases():
+    assert cli._parse_terms(r"Foo\|BAR") == ["foo", "bar"]
+
+
+# ── _matches_any ─────────────────────────────────────────────────────────────
+
+
+def test_matches_any_single_hit():
+    assert cli._matches_any("hello world", ["world"])
+
+
+def test_matches_any_or():
+    assert cli._matches_any("hello world", ["zzz", "world"])
+    assert not cli._matches_any("hello world", ["zzz", "xxx"])
 
 
 # ── _step_search_blobs ──────────────────────────────────────────────────────
@@ -130,13 +163,30 @@ def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
     args = argparse.Namespace(query="sonnet", page=1, page_size=50)
-    cli.cmd_search_content(args, "sonnet", [rec])
+    cli.cmd_search_content(args, ["sonnet"], [rec])
 
     out = capsys.readouterr().out
     assert "cl-abc" in out
     assert "## Search:" in out
     # The match is in step 2 (tool result observation) or step 3 (closing message).
     assert "| 2 |" in out or "| 3 |" in out
+
+
+def test_cmd_search_content_or_query(tmp_path, monkeypatch, capsys):
+    """OR query: matching either term finds the trajectory."""
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+
+    # "sonnet" is in the trajectory; "zzz_missing" is not — OR should still match
+    args = argparse.Namespace(query=r"zzz_missing\|sonnet", page=1, page_size=50)
+    cli.cmd_search_content(args, cli._parse_terms(args.query), [rec])
+
+    out = capsys.readouterr().out
+    assert "cl-abc" in out
+    assert "## Search:" in out
 
 
 def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
@@ -147,7 +197,7 @@ def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
     args = argparse.Namespace(query="zzz_not_present", page=1, page_size=50)
-    cli.cmd_search_content(args, "zzz_not_present", [rec])
+    cli.cmd_search_content(args, ["zzz_not_present"], [rec])
 
     out = capsys.readouterr().out
     assert "No trajectories found" in out
