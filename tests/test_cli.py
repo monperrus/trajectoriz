@@ -162,7 +162,7 @@ def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
     _write_claude_trajectory(f)
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
-    args = argparse.Namespace(query="sonnet", page=1, page_size=50)
+    args = argparse.Namespace(query="sonnet", page=1, page_size=50, last=False)
     cli.cmd_search_content(args, ["sonnet"], [rec])
 
     out = capsys.readouterr().out
@@ -181,7 +181,7 @@ def test_cmd_search_content_or_query(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
     # "sonnet" is in the trajectory; "zzz_missing" is not — OR should still match
-    args = argparse.Namespace(query=r"zzz_missing\|sonnet", page=1, page_size=50)
+    args = argparse.Namespace(query=r"zzz_missing\|sonnet", page=1, page_size=50, last=False)
     cli.cmd_search_content(args, cli._parse_terms(args.query), [rec])
 
     out = capsys.readouterr().out
@@ -196,7 +196,7 @@ def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
     _write_claude_trajectory(f)
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
-    args = argparse.Namespace(query="zzz_not_present", page=1, page_size=50)
+    args = argparse.Namespace(query="zzz_not_present", page=1, page_size=50, last=False)
     cli.cmd_search_content(args, ["zzz_not_present"], [rec])
 
     out = capsys.readouterr().out
@@ -215,7 +215,7 @@ def test_cmd_show_step_jumps_to_correct_page(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
 
     # 3 steps total, page_size=2 -> step 3 should land on page 2.
-    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=3, full=False)
+    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=3, full=False, last=False)
     cli.cmd_show(args)
 
     out = capsys.readouterr().out
@@ -231,7 +231,7 @@ def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
     monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
 
-    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=99, full=False)
+    args = argparse.Namespace(id="cl-abc", page=1, page_size=2, step=99, full=False, last=False)
     with pytest.raises(SystemExit):
         cli.cmd_show(args)
 
