@@ -338,6 +338,8 @@ def _paginate_items(
 ) -> None:
     total = len(items)
     total_pages = max(1, math.ceil(total / page_size))
+    if page == -1:
+        page = total_pages
     if page < 1 or page > total_pages:
         print(f"Error: page {page} out of range (1–{total_pages}).", file=sys.stderr)
         sys.exit(1)
@@ -397,7 +399,8 @@ def cmd_list(args) -> None:
             "|---|---|---|---|"
         )
     rows = [_record_row(r, show_dir=show_dir) for r in records]
-    _paginate_items(rows, args.page, args.page_size, header, "trajectories",
+    page = -1 if args.last else args.page
+    _paginate_items(rows, page, args.page_size, header, "trajectories",
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
@@ -432,7 +435,8 @@ def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> No
         "|---|---|---|---|"
     )
     rows = [_record_row(r) for r in records]
-    _paginate_items(rows, args.page, args.page_size, header, "trajectories",
+    page = -1 if args.last else args.page
+    _paginate_items(rows, page, args.page_size, header, "trajectories",
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
@@ -470,7 +474,8 @@ def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord]) -> 
         date = rec.timestamp[:10] if rec.timestamp else "—"
         snippet = snippet.replace("|", "\\|").replace("\n", " ")
         rows.append(f"| `{rec.id}` | {rec.agent} | {date} | {step_id} | {snippet} |")
-    _paginate_items(rows, args.page, args.page_size, header, "matches",
+    page = -1 if args.last else args.page
+    _paginate_items(rows, page, args.page_size, header, "matches",
                     footer="\nUse `trajectoriz-cli show <id> --step N` to jump to a step.")
 
 
@@ -488,12 +493,15 @@ def cmd_show(args) -> None:
 
     header, steps = _trajectory_header_and_steps(record, full=args.full)
 
-    page = args.page
-    if args.step is not None:
+    if args.last:
+        page = -1
+    elif args.step is not None:
         if args.step < 1 or args.step > len(steps):
             print(f"Error: step {args.step} out of range (1–{len(steps)}).", file=sys.stderr)
             sys.exit(1)
         page = math.ceil(args.step / args.page_size)
+    else:
+        page = args.page
 
     _paginate_items(steps, page, args.page_size, header, "steps")
 
@@ -578,6 +586,7 @@ def main() -> None:
         "--page-size", type=int, default=DEFAULT_LIST_PAGE_SIZE, metavar="N",
         help=f"Trajectories per page (default: {DEFAULT_LIST_PAGE_SIZE})",
     )
+    p_list.add_argument("--last", action="store_true", help="Jump to the last page.")
     p_list.add_argument("--all", action="store_true", help="Include all agents/directories (adds Directory column).")
     p_list.add_argument(
         "--since", metavar="YYYY-MM-DD",
@@ -600,6 +609,7 @@ def main() -> None:
         "--page-size", type=int, default=DEFAULT_LIST_PAGE_SIZE, metavar="N",
         help=f"Trajectories per page (default: {DEFAULT_LIST_PAGE_SIZE})",
     )
+    p_search.add_argument("--last", action="store_true", help="Jump to the last page.")
     p_search.add_argument(
         "--local", action="store_true",
         help="Restrict search to the current directory (default searches all).",
@@ -628,6 +638,7 @@ def main() -> None:
         "--page-size", type=int, default=DEFAULT_SHOW_PAGE_SIZE, metavar="N",
         help=f"Messages (steps) per page (default: {DEFAULT_SHOW_PAGE_SIZE})",
     )
+    p_show.add_argument("--last", action="store_true", help="Jump to the last page.")
     p_show.add_argument(
         "--step", type=int, default=None, metavar="N",
         help="Jump directly to the page containing step N.",
