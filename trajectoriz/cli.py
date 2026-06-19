@@ -105,7 +105,8 @@ def _local_records(cwd: str) -> Iterator[TrajRecord]:
                 "codex_db",
                 str(sess.updated_at_ms or ""),
                 sess.first_user_message or "",
-                {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
+                {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd,
+                 "rollout_path": sess.rollout_path},
             )
 
 
@@ -141,7 +142,8 @@ def _all_records() -> Iterator[TrajRecord]:
             "codex_db",
             str(sess.updated_at_ms or ""),
             sess.first_user_message or "",
-            {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
+            {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd,
+             "rollout_path": sess.rollout_path},
         )
 
     copilot_db = Path.home() / ".copilot" / "session-store.db"
@@ -200,6 +202,21 @@ def _parse_record(record: TrajRecord, cache_dir=None) -> Optional[tz.ParsedTraje
         if parse_fn is None:
             return None
         return _cached_parse(f"{record.agent}:{path}", mtime, lambda: parse_fn(path), cache_dir)
+
+    if isinstance(record.source, dict) and record.source.get("type") == "codex_db":
+        rollout_path = record.source.get("rollout_path")
+        if rollout_path:
+            path = Path(rollout_path)
+            if path.exists():
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    mtime = 0.0
+                return _cached_parse(
+                    f"codex_db:{record.source['session_id']}", mtime,
+                    lambda p=path: tz.parse_codex_trajectory(p), cache_dir,
+                )
+        return None
 
     if isinstance(record.source, dict) and record.source.get("type") == "copilot_db":
         db_path = Path(record.source["db_path"])
@@ -899,6 +916,10 @@ def main() -> None:
         "delete",
         help="Delete trajectories whose only user message matches a given text.",
     )
+    sub._choices_actions = [
+        action for action in sub._choices_actions
+        if action.dest != "delete"
+    ]
     p_delete.add_argument("message", help="Delete trajectories whose sole user message matches this text (case-insensitive).")
     p_delete.add_argument(
         "--yes", "-y", action="store_true",
@@ -906,6 +927,10 @@ def main() -> None:
     )
     p_delete.add_argument("--all", action="store_true", help="Search across all agents/directories.")
     p_delete.set_defaults(func=cmd_delete)
+
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return
 
     args = parser.parse_args()
     args.func(args)

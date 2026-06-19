@@ -8,6 +8,27 @@ import pytest
 from trajectoriz import cli
 
 
+def test_main_without_args_shows_help(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "usage: trajectoriz-cli" in out
+    assert "Search and browse past agent trajectories." in out
+
+
+def test_main_help_hides_delete_command(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli", "--help"])
+
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "delete" not in out
+
+
 def _write_claude_trajectory(path):
     """Write a small Claude Code trajectory JSONL with a tool call/result deep in it."""
     lines = [
