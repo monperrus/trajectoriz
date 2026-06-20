@@ -92,6 +92,68 @@ def iter_agent_probe_trajectories(agent_probe_dir=None):
 
 
 @dataclass(frozen=True)
+class HermesSession:
+    """One row from the Hermes Agent sessions table."""
+    id: str
+    model: str | None
+    cwd: str | None
+    started_at: float | None
+    ended_at: float | None
+    message_count: int | None
+    tool_call_count: int | None
+    input_tokens: int | None
+    output_tokens: int | None
+    title: str | None
+    first_user_message: str | None
+
+
+def iter_hermes_sessions(hermes_dir=None):
+    """Yield HermesSession objects from ~/.hermes/state.db."""
+    d = Path(hermes_dir) if hermes_dir else Path.home() / ".hermes"
+    db = d / "state.db"
+    if not db.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute(
+                "SELECT id, model, cwd, started_at, ended_at, message_count, "
+                "tool_call_count, input_tokens, output_tokens, title "
+                "FROM sessions ORDER BY started_at DESC"
+            ).fetchall()
+            for row in rows:
+                session_id = row[0]
+                first_user_message = None
+                try:
+                    msg_row = conn.execute(
+                        "SELECT content FROM messages WHERE session_id=? AND role='user' "
+                        "ORDER BY id LIMIT 1",
+                        (session_id,),
+                    ).fetchone()
+                    if msg_row:
+                        first_user_message = (msg_row[0] or "").strip() or None
+                except Exception:
+                    pass
+                yield HermesSession(
+                    id=row[0],
+                    model=row[1],
+                    cwd=row[2],
+                    started_at=row[3],
+                    ended_at=row[4],
+                    message_count=row[5],
+                    tool_call_count=row[6],
+                    input_tokens=row[7],
+                    output_tokens=row[8],
+                    title=row[9],
+                    first_user_message=first_user_message,
+                )
+        finally:
+            conn.close()
+    except Exception:
+        return
+
+
+@dataclass(frozen=True)
 class OpencodeSession:
     """One row from the opencode session table, plus a pre-fetched first_prompt."""
     id: str
@@ -933,6 +995,140 @@ def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp:
         },
     )
     traj.total_tokens = estimate_trajectory_tokens(traj)
+    return traj
+
+
+def parse_hermes_trajectory(session_id: str, hermes_dir=None, fallback_timestamp: str = "") -> ParsedTrajectory:
+    """Parse a Hermes Agent session from ~/.hermes/state.db."""
+    d = Path(hermes_dir) if hermes_dir else Path.home() / ".hermes"
+    db = d / "state.db"
+    conn = sqlite3.connect(str(db))
+    try:
+        sess_row = conn.execute(
+            "SELECT model, cwd, started_at, input_tokens, output_tokens, "
+            "cache_read_tokens, cache_write_tokens "
+            "FROM sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        if not sess_row:
+            return ParsedTrajectory()
+        model_name, cwd, _started_at, input_tokens, output_tokens, cache_read, cache_write = sess_row
+
+        msgs = conn.execute(
+            "SELECT role, content, tool_calls, tool_name, tool_call_id, timestamp, reasoning_content "
+            "FROM messages WHERE session_id=? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    tool_results: dict[str, str] = {}
+    for role, content, _tc, _tool_name, tc_id, _ts, _rc in msgs:
+        if role == "tool" and tc_id:
+            tool_results[tc_id] = str(content or "")
+
+    steps: list[dict] = []
+    step_id = 0
+    total_tool_calls = 0
+    pending: dict | None = None
+
+    def _flush_pending() -> None:
+        nonlocal pending
+        if pending is None:
+            return
+        tool_calls: list[dict] = pending.get("tool_calls", [])
+        if tool_calls:
+            results = [
+                {"source_call_id": tc["tool_call_id"],
+                 "content": _truncate(tool_results[tc["tool_call_id"]])}
+                for tc in tool_calls
+                if tc["tool_call_id"] in tool_results
+            ]
+            if results:
+                pending["observation"] = {"results": results}
+        if not tool_calls:
+            pending.pop("tool_calls", None)
+        steps.append(pending)
+        pending = None
+
+    def _ts(raw_ts) -> str:
+        if raw_ts:
+            import datetime
+            try:
+                return datetime.datetime.fromtimestamp(float(raw_ts)).isoformat()
+            except (ValueError, OSError):
+                pass
+        return fallback_timestamp
+
+    for role, content, tool_calls_json, tool_name, tc_id, raw_ts, reasoning in msgs:
+        ts = _ts(raw_ts)
+
+        if role == "user":
+            _flush_pending()
+            text = (content or "").strip()
+            if text:
+                step_id += 1
+                steps.append({"step_id": step_id, "timestamp": ts,
+                               "source": "user", "message": text})
+
+        elif role == "assistant":
+            text = (content or "").strip()
+            tool_calls_parsed: list[dict] = []
+            if tool_calls_json:
+                try:
+                    raw_calls = json.loads(tool_calls_json)
+                    for tc in raw_calls:
+                        call_id = tc.get("id") or tc.get("call_id", "")
+                        fn = tc.get("function") or {}
+                        name = fn.get("name") or tc.get("name", "")
+                        args_raw = fn.get("arguments") or tc.get("arguments") or "{}"
+                        try:
+                            arguments = json.loads(args_raw) if isinstance(args_raw, str) else args_raw
+                        except (json.JSONDecodeError, TypeError):
+                            arguments = {"raw": args_raw}
+                        tool_calls_parsed.append({
+                            "tool_call_id": call_id,
+                            "function_name": name,
+                            "arguments": arguments,
+                        })
+                        total_tool_calls += 1
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if pending is None:
+                step_id += 1
+                pending = {"step_id": step_id, "timestamp": ts,
+                           "source": "agent", "message": text, "tool_calls": []}
+            elif text:
+                existing = pending.get("message", "")
+                pending["message"] = (existing + "\n" + text).strip()
+
+            if reasoning:
+                pending["reasoning_content"] = reasoning
+            pending["tool_calls"].extend(tool_calls_parsed)
+
+            if not tool_calls_parsed:
+                _flush_pending()
+
+        # role == "tool": already collected into tool_results above
+
+    _flush_pending()
+
+    total_prompt = input_tokens or 0
+    total_completion = output_tokens or 0
+    total_cached = (cache_read or 0) + (cache_write or 0)
+
+    traj = ParsedTrajectory(
+        session_id=session_id,
+        model_name=model_name,
+        cwd=cwd or "",
+        steps=steps,
+        total_prompt_tokens=total_prompt,
+        total_completion_tokens=total_completion,
+        total_cached_tokens=total_cached,
+        total_tool_calls=total_tool_calls,
+    )
+    traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
 
 

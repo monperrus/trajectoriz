@@ -32,6 +32,17 @@ def _short_id(prefix: str, key: str) -> str:
     return f"{prefix}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
 
 
+def _hermes_ts(started_at) -> str:
+    """Convert a Hermes float Unix timestamp to an ISO-8601 string."""
+    if not started_at:
+        return ""
+    import datetime
+    try:
+        return datetime.datetime.fromtimestamp(float(started_at)).isoformat()
+    except (ValueError, OSError):
+        return ""
+
+
 def _codex_first_user_message(path: Path) -> tuple[str, str]:
     ts = ""
     try:
@@ -57,7 +68,7 @@ def _codex_first_user_message(path: Path) -> tuple[str, str]:
     return ts, ""
 
 
-def _cwd_matches(cwd_field: str, target: str) -> bool:
+def _cwd_matches(cwd_field: Optional[str], target: str) -> bool:
     """True if cwd_field is target or a subdirectory of target."""
     if not cwd_field:
         return False
@@ -109,6 +120,16 @@ def _local_records(cwd: str) -> Iterator[TrajRecord]:
                  "rollout_path": sess.rollout_path},
             )
 
+    for sess in tz.iter_hermes_sessions():
+        if _cwd_matches(sess.cwd, cwd):
+            yield TrajRecord(
+                _short_id("hm", sess.id),
+                "hermes",
+                _hermes_ts(sess.started_at),
+                sess.first_user_message or "",
+                {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
+            )
+
 
 def _all_records() -> Iterator[TrajRecord]:
     for p in tz.iter_claude_trajectories():
@@ -144,6 +165,15 @@ def _all_records() -> Iterator[TrajRecord]:
             sess.first_user_message or "",
             {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd,
              "rollout_path": sess.rollout_path},
+        )
+
+    for sess in tz.iter_hermes_sessions():
+        yield TrajRecord(
+            _short_id("hm", sess.id),
+            "hermes",
+            _hermes_ts(sess.started_at),
+            sess.first_user_message or "",
+            {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
         )
 
     copilot_db = Path.home() / ".copilot" / "session-store.db"
@@ -228,6 +258,18 @@ def _parse_record(record: TrajRecord, cache_dir=None) -> Optional[tz.ParsedTraje
         return _cached_parse(
             f"copilot_db:{db_path}:{session_id}", mtime,
             lambda: tz.parse_copilot_trajectory(db_path, session_id), cache_dir,
+        )
+
+    if isinstance(record.source, dict) and record.source.get("type") == "hermes":
+        session_id = record.source["session_id"]
+        db_path = Path.home() / ".hermes" / "state.db"
+        try:
+            mtime = db_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        return _cached_parse(
+            f"hermes:{session_id}", mtime,
+            lambda sid=session_id: tz.parse_hermes_trajectory(sid), cache_dir,
         )
 
     return None
