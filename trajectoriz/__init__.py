@@ -1043,3 +1043,200 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
         (total_prompt + total_completion) if saw_usage else estimate_trajectory_tokens(traj)
     )
     return traj
+
+
+# ── Trajectory state tracking (before/after a run) ───────────────────────────
+
+def collect_trajectory_state(kind: str | None, repo_root: str) -> dict[str, float]:
+    """Snapshot trajectory file mtimes (or session IDs) before an agent run."""
+    if kind == "claude_project_jsonl":
+        before: dict[str, float] = {}
+        for p in iter_claude_project_trajectories(repo_root):
+            try:
+                before[str(p)] = p.stat().st_mtime
+            except OSError:
+                continue
+        return before
+    if kind == "codex_rollout_jsonl":
+        state: dict[str, float] = {}
+        for p in iter_codex_rollout_files():
+            try:
+                state[str(p)] = p.stat().st_mtime
+            except OSError:
+                pass
+        return state
+    if kind == "copilot_sqlite":
+        return {sid: 0.0 for sid, _created_at in iter_copilot_sessions()}
+    return {}
+
+
+def pick_trajectory_id(kind: str | None, repo_root: str, before: dict[str, float]) -> str | None:
+    """Return the trajectory ID for the run that just completed."""
+    if kind == "claude_project_jsonl":
+        candidates: list[tuple[float, Path]] = []
+        for p in iter_claude_project_trajectories(repo_root):
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            old_mtime = before.get(str(p))
+            if old_mtime is None or mtime > old_mtime:
+                candidates.append((mtime, p))
+        if not candidates:
+            for p in iter_claude_project_trajectories(repo_root):
+                try:
+                    candidates.append((p.stat().st_mtime, p))
+                except OSError:
+                    continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        return candidates[0][1].stem
+    if kind == "codex_rollout_jsonl":
+        new_files: list[tuple[float, Path]] = []
+        for p in iter_codex_rollout_files():
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            if before.get(str(p)) != mtime:
+                new_files.append((mtime, p))
+        if not new_files:
+            return None
+        new_files.sort(key=lambda x: x[0], reverse=True)
+        return str(new_files[0][1])
+    if kind == "copilot_sqlite":
+        rows = list(iter_copilot_sessions())
+        if not rows:
+            return None
+        new_sessions = [(created_at, sid) for sid, created_at in rows if sid not in before]
+        if new_sessions:
+            new_sessions.sort(reverse=True)
+            return new_sessions[0][1]
+        return sorted(rows, key=lambda r: r[1], reverse=True)[0][0]
+    return None
+
+
+# ── Codex exec --json stdout parsing ─────────────────────────────────────────
+
+def codex_exec_jsonl_final_message(stdout_text: str) -> str | None:
+    """Return the last agent_message text from `codex exec --json` stdout."""
+    messages: list[str] = []
+    for raw in stdout_text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entry = json.loads(raw)
+        except json.JSONDecodeError:
+            return None
+        item = entry.get("item") or {}
+        if entry.get("type") == "item.completed" and item.get("type") == "agent_message":
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                messages.append(text)
+    if not messages:
+        return None
+    return messages[-1]
+
+
+def parse_codex_exec_trajectory(stdout_text: str, prompt: str = "", fallback_ts: str = "") -> ParsedTrajectory:
+    """Parse `codex exec --json` stdout JSONL into a ParsedTrajectory."""
+    entries: list[dict] = []
+    for raw in stdout_text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            entries.append(json.loads(raw))
+        except json.JSONDecodeError:
+            return ParsedTrajectory()
+
+    session_id: str | None = None
+    steps: list[dict] = []
+    step_id = 0
+    total_tool_calls = 0
+    total_prompt = total_completion = total_cached = 0
+    pending: dict | None = None
+
+    if prompt:
+        step_id += 1
+        steps.append({"step_id": step_id, "timestamp": fallback_ts,
+                       "source": "user", "message": prompt})
+
+    def _ensure_pending() -> dict:
+        nonlocal pending, step_id
+        if pending is None:
+            step_id += 1
+            pending = {"step_id": step_id, "timestamp": fallback_ts,
+                       "source": "agent", "message": "", "tool_calls": []}
+        return pending
+
+    def _flush_pending() -> None:
+        nonlocal pending
+        if pending is None:
+            return
+        if not pending.get("tool_calls"):
+            pending.pop("tool_calls", None)
+        steps.append(pending)
+        pending = None
+
+    for entry in entries:
+        entry_type = entry.get("type")
+        if entry_type == "thread.started" and entry.get("thread_id"):
+            session_id = str(entry["thread_id"])
+            continue
+
+        if entry_type == "item.completed":
+            item = entry.get("item") or {}
+            item_type = item.get("type")
+            if item_type == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    p = _ensure_pending()
+                    p["message"] = (p.get("message", "") + "\n" + text).strip()
+            elif item_type == "command_execution":
+                p = _ensure_pending()
+                call_id = str(item.get("id") or f"command_{total_tool_calls + 1}")
+                p.setdefault("tool_calls", []).append({
+                    "tool_call_id": call_id,
+                    "function_name": "command_execution",
+                    "arguments": {
+                        "command": item.get("command", ""),
+                        "exit_code": item.get("exit_code"),
+                        "status": item.get("status", ""),
+                    },
+                })
+                output = item.get("aggregated_output")
+                if isinstance(output, str) and output:
+                    p.setdefault("observation", {"results": []})["results"].append({
+                        "source_call_id": call_id,
+                        "content": _truncate(output),
+                    })
+                total_tool_calls += 1
+
+        elif entry_type == "turn.completed":
+            usage = entry.get("usage") or {}
+            total_prompt = max(total_prompt, usage.get("input_tokens") or 0)
+            total_completion = max(total_completion, usage.get("output_tokens") or 0)
+            total_cached = max(total_cached, usage.get("cached_input_tokens") or 0)
+            if pending is not None:
+                pending["metrics"] = {
+                    "prompt_tokens": usage.get("input_tokens") or 0,
+                    "completion_tokens": usage.get("output_tokens") or 0,
+                    "cached_tokens": usage.get("cached_input_tokens") or 0,
+                }
+            _flush_pending()
+
+    _flush_pending()
+
+    traj = ParsedTrajectory(
+        session_id=session_id,
+        steps=steps,
+        total_prompt_tokens=total_prompt,
+        total_completion_tokens=total_completion,
+        total_cached_tokens=total_cached,
+        total_tool_calls=total_tool_calls,
+    )
+    traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
+    return traj
