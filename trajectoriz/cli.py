@@ -336,6 +336,8 @@ def _trajectory_header_and_steps(record: TrajRecord, full: bool = False) -> tupl
     hlines.append(f"**Steps:** {len(traj.steps)}")
     if traj.model_name:
         hlines.append(f"**Model:** {traj.model_name}")
+    if traj.cwd:
+        hlines.append(f"**Directory:** {traj.cwd}")
     if traj.total_tool_calls:
         hlines.append(f"**Tool calls:** {traj.total_tool_calls}")
     if traj.total_prompt_tokens or traj.total_completion_tokens:
@@ -769,6 +771,22 @@ def _is_single_message_only(record: TrajRecord, message: str) -> bool:
     return True
 
 
+def cmd_info(args) -> None:
+    target = args.id
+    record: Optional[TrajRecord] = None
+    for rec in _all_records():
+        if rec.id == target:
+            record = rec
+            break
+
+    if record is None:
+        print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
+        sys.exit(1)
+
+    header, _ = _trajectory_header_and_steps(record)
+    print(header)
+
+
 def cmd_delete(args) -> None:
     """Delete trajectories that have only one user message matching the given text."""
     source = _all_records() if args.all else _local_records(os.getcwd())
@@ -892,6 +910,14 @@ def main() -> None:
         help="Show complete tool call arguments and results without truncation.",
     )
     p_show.set_defaults(func=cmd_show)
+
+    # info
+    p_info = sub.add_parser(
+        "info",
+        help="Show compact metadata for a trajectory (no steps).",
+    )
+    p_info.add_argument("id", help="Trajectory ID (from list or search).")
+    p_info.set_defaults(func=cmd_info)
 
     # blame
     p_blame = sub.add_parser(

@@ -244,6 +244,83 @@ def test_cmd_show_step_jumps_to_correct_page(tmp_path, monkeypatch, capsys):
     assert "Step 3" in out
 
 
+def _write_claude_trajectory_with_cwd(path, cwd="/home/user/myrepo"):
+    """Write a Claude trajectory JSONL that includes a cwd in the first entry."""
+    lines = [
+        {"type": "system", "cwd": cwd},
+        {"type": "user", "sessionId": "s1", "timestamp": "2024-06-01T10:00:00Z",
+         "message": {"content": "refactor the module"}},
+        {"type": "assistant", "timestamp": "2024-06-01T10:00:01Z", "message": {
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "Done."}],
+            "usage": {"input_tokens": 20, "output_tokens": 5},
+        }},
+    ]
+    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+
+
+def test_show_header_includes_cwd(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory_with_cwd(f, cwd="/home/user/myrepo")
+    rec = cli.TrajRecord("cl-xyz", "claude", "2024-06-01T10:00:00Z", "refactor the module", f)
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+
+    args = argparse.Namespace(id="cl-xyz", page=1, page_size=20, step=None, full=False, last=False)
+    cli.cmd_show(args)
+
+    out = capsys.readouterr().out
+    assert "**Directory:** /home/user/myrepo" in out
+
+
+def test_cmd_info_prints_metadata(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory_with_cwd(f, cwd="/home/user/myrepo")
+    rec = cli.TrajRecord("cl-xyz", "claude", "2024-06-01T10:00:00Z", "refactor the module", f)
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+
+    args = argparse.Namespace(id="cl-xyz")
+    cli.cmd_info(args)
+
+    out = capsys.readouterr().out
+    assert "cl-xyz" in out
+    assert "**Agent:** claude" in out
+    assert "**Directory:** /home/user/myrepo" in out
+    assert "**Model:** claude-sonnet-4-6" in out
+    # info must not dump the conversation steps
+    assert "Step 1" not in out
+    assert "Step 2" not in out
+
+
+def test_cmd_info_not_found(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([]))
+
+    args = argparse.Namespace(id="cl-missing")
+    with pytest.raises(SystemExit):
+        cli.cmd_info(args)
+
+    err = capsys.readouterr().err
+    assert "not found" in err
+
+
+def test_main_info_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory_with_cwd(f, cwd="/srv/app")
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-06-01T00:00:00Z", "fix it", f)
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+    monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli", "info", "cl-abc"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    assert "**Directory:** /srv/app" in out
+
+
 def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
 

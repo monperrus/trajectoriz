@@ -380,6 +380,7 @@ class ParsedTrajectory:
     total_tool_calls: int = 0
     total_tokens: int = 0
     extra_agent: dict = field(default_factory=dict)
+    cwd: str = ""
 
 
 def estimate_tokens(value: object) -> int:
@@ -474,10 +475,17 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
     session_id: str | None = None
     model_name: str | None = None
     agent_version: str | None = None
+    cwd: str = ""
 
     for entry in entries:
         if not session_id and "sessionId" in entry:
             session_id = entry["sessionId"]
+        if not cwd:
+            for _key in ("cwd", "workingDirectory", "working_directory"):
+                _val = entry.get(_key)
+                if _val and isinstance(_val, str):
+                    cwd = _val
+                    break
         if entry.get("type") == "assistant":
             msg = entry.get("message") or {}
             if not model_name and msg.get("model"):
@@ -599,6 +607,7 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        cwd=cwd,
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
@@ -619,6 +628,7 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
     session_id: str | None = None
     model_name: str | None = None
     cli_version: str | None = None
+    cwd: str = ""
 
     for entry in entries:
         t = entry.get("type", "")
@@ -626,8 +636,12 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
         if t == "session_meta":
             session_id = p.get("id")
             cli_version = p.get("cli_version")
+            if not cwd:
+                cwd = p.get("cwd") or ""
         if t == "turn_context" and p.get("model") and not model_name:
             model_name = p["model"]
+            if not cwd:
+                cwd = p.get("cwd") or ""
 
     tool_results: dict[str, str] = {}
     for entry in entries:
@@ -744,6 +758,7 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        cwd=cwd,
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
@@ -764,6 +779,7 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
     session_id: str | None = None
     model_name: str | None = None
     copilot_version: str | None = None
+    cwd: str = ""
 
     for entry in entries:
         t = entry.get("type", "")
@@ -771,6 +787,8 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
         if t == "session.start":
             session_id = data.get("sessionId")
             copilot_version = data.get("copilotVersion")
+            if not cwd:
+                cwd = data.get("cwd") or data.get("workingDirectory") or ""
         if t == "session.model_change":
             if not model_name:
                 model_name = data.get("newModel")
@@ -866,6 +884,7 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        cwd=cwd,
     )
     traj.total_tokens = estimate_trajectory_tokens(traj)
     return traj
@@ -881,7 +900,7 @@ def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp:
         ).fetchone()
         if not session_row:
             return ParsedTrajectory()
-        _cwd, repository, _branch, summary, _created_at = session_row
+        session_cwd, repository, _branch, summary, _created_at = session_row
 
         turns = conn.execute(
             "SELECT turn_index, user_message, assistant_response, timestamp "
@@ -907,6 +926,7 @@ def parse_copilot_trajectory(db_path: Path, session_id: str, fallback_timestamp:
 
     traj = ParsedTrajectory(
         steps=steps,
+        cwd=session_cwd or "",
         extra_agent={
             "copilot_repository": repository or "",
             "copilot_summary": summary or "",
@@ -936,6 +956,7 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
 
     session_id: str | None = None
     model_name: str | None = None
+    cwd: str = ""
     steps: list[dict] = []
     step_id = 0
     total_tool_calls = 0
@@ -962,6 +983,8 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
         if t == "session_start":
             session_id = entry.get("session_id")
             model_name = entry.get("model")
+            if not cwd:
+                cwd = entry.get("cwd") or ""
 
         elif t == "user":
             _flush_pending()
@@ -1009,6 +1032,7 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
     traj = ParsedTrajectory(
         session_id=session_id,
         model_name=model_name,
+        cwd=cwd,
         steps=steps,
         total_prompt_tokens=total_prompt,
         total_completion_tokens=total_completion,

@@ -375,6 +375,77 @@ def test_parse_claude_trajectory_total_tokens_estimated_without_usage(tmp_path):
     assert traj.total_tokens == estimate_tokens("hello") + estimate_tokens("hi there")
 
 
+def test_parse_claude_trajectory_cwd(tmp_path):
+    import json
+
+    from trajectoriz import parse_claude_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "system", "cwd": "/home/user/repo"}) + "\n"
+        + json.dumps({"type": "user", "sessionId": "s1",
+                      "message": {"content": "hello"}}) + "\n"
+    )
+    traj = parse_claude_trajectory(f)
+    assert traj.cwd == "/home/user/repo"
+
+
+def test_parse_claude_trajectory_cwd_missing(tmp_path):
+    import json
+
+    from trajectoriz import parse_claude_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n")
+    traj = parse_claude_trajectory(f)
+    assert traj.cwd == ""
+
+
+def test_parse_codex_trajectory_cwd(tmp_path):
+    import json
+
+    from trajectoriz import parse_codex_trajectory
+
+    f = tmp_path / "rollout-001.jsonl"
+    f.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "s1", "cwd": "/work/project"}}) + "\n"
+        + json.dumps({"type": "event_msg", "payload": {"type": "user_message",
+                       "message": "hello"}}) + "\n"
+    )
+    traj = parse_codex_trajectory(f)
+    assert traj.cwd == "/work/project"
+
+
+def test_parse_copilot_event_trajectory_cwd(tmp_path):
+    import json
+
+    from trajectoriz import parse_copilot_event_trajectory
+
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        json.dumps({"type": "session.start",
+                    "data": {"sessionId": "s1", "cwd": "/home/user/project"}}) + "\n"
+        + json.dumps({"type": "user.message", "data": {"content": "fix it"}}) + "\n"
+    )
+    traj = parse_copilot_event_trajectory(f)
+    assert traj.cwd == "/home/user/project"
+
+
+def test_parse_agent_probe_trajectory_cwd(tmp_path):
+    import json
+
+    from trajectoriz import parse_agent_probe_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "session_start", "session_id": "s1",
+                    "model": "gpt-4", "cwd": "/srv/myapp"}) + "\n"
+        + json.dumps({"type": "user", "content": "do the thing"}) + "\n"
+    )
+    traj = parse_agent_probe_trajectory(f)
+    assert traj.cwd == "/srv/myapp"
+
+
 def test_parse_copilot_event_trajectory_total_tokens(tmp_path):
     import json
 
