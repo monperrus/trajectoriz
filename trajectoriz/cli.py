@@ -767,13 +767,29 @@ def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord]) -> 
                     footer="\nUse `trajectoriz-cli show <id> --step N` to jump to a step.")
 
 
-def cmd_show(args) -> None:
-    target = args.id
-    record: Optional[TrajRecord] = None
+def _native_id(rec: TrajRecord) -> Optional[str]:
+    """Return the underlying agent's own session/file ID for a record, if any."""
+    if isinstance(rec.source, dict):
+        return str(rec.source.get("session_id") or "")
+    if isinstance(rec.source, Path):
+        return rec.source.name
+    return None
+
+
+def _find_record(target: str) -> Optional[TrajRecord]:
+    """Look up a record by short ID or native ID."""
     for rec in _all_records():
         if rec.id == target:
-            record = rec
-            break
+            return rec
+        native = _native_id(rec)
+        if native and native == target:
+            return rec
+    return None
+
+
+def cmd_show(args) -> None:
+    target = args.id
+    record = _find_record(target)
 
     if record is None:
         print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
@@ -815,11 +831,7 @@ def _is_single_message_only(record: TrajRecord, message: str) -> bool:
 
 def cmd_info(args) -> None:
     target = args.id
-    record: Optional[TrajRecord] = None
-    for rec in _all_records():
-        if rec.id == target:
-            record = rec
-            break
+    record = _find_record(target)
 
     if record is None:
         print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
