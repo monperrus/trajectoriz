@@ -834,11 +834,82 @@ def cmd_info(args) -> None:
     record = _find_record(target)
 
     if record is None:
-        print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
+        print(json.dumps({"error": f"trajectory `{target}` not found"}, indent=2))
         sys.exit(1)
 
-    header, _ = _trajectory_header_and_steps(record)
-    print(header)
+    traj = _parse_record(record)
+    info: dict = {
+        "id": record.id,
+        "agent": record.agent,
+        "timestamp": record.timestamp,
+        "first_message": record.first_msg,
+    }
+    if traj is not None:
+        info["steps"] = len(traj.steps)
+        info["model"] = traj.model_name
+        info["directory"] = traj.cwd
+        info["tool_calls"] = traj.total_tool_calls
+        info["prompt_tokens"] = traj.total_prompt_tokens
+        info["completion_tokens"] = traj.total_completion_tokens
+        info["cached_tokens"] = traj.total_cached_tokens
+        info["total_tokens"] = traj.total_tokens
+        if traj.session_id:
+            info["session_id"] = traj.session_id
+        if traj.agent_version:
+            info["agent_version"] = traj.agent_version
+    else:
+        if isinstance(record.source, dict):
+            info["source"] = record.source
+        else:
+            info["source"] = str(record.source)
+
+    print(json.dumps(info, indent=2))
+
+
+def cmd_stats(args) -> None:
+    """Print aggregate statistics about trajectories as pretty-printed JSON."""
+    source = _all_records() if args.all else _local_records(os.getcwd())
+    records = list(source)
+
+    total_trajectories = len(records)
+    agent_counts: dict[str, int] = {}
+    total_steps = 0
+    total_tool_calls = 0
+    total_prompt_tokens = 0
+    total_completion_tokens = 0
+    total_cached_tokens = 0
+    total_tokens_agg = 0
+    parsed_count = 0
+    unparsed_count = 0
+
+    for rec in records:
+        agent_counts[rec.agent] = agent_counts.get(rec.agent, 0) + 1
+        traj = _parse_record(rec)
+        if traj is not None:
+            parsed_count += 1
+            total_steps += len(traj.steps)
+            total_tool_calls += traj.total_tool_calls
+            total_prompt_tokens += traj.total_prompt_tokens
+            total_completion_tokens += traj.total_completion_tokens
+            total_cached_tokens += traj.total_cached_tokens
+            total_tokens_agg += traj.total_tokens
+        else:
+            unparsed_count += 1
+
+    stats = {
+        "total_trajectories": total_trajectories,
+        "parsed_trajectories": parsed_count,
+        "unparsed_trajectories": unparsed_count,
+        "agents": agent_counts,
+        "total_steps": total_steps,
+        "total_tool_calls": total_tool_calls,
+        "total_prompt_tokens": total_prompt_tokens,
+        "total_completion_tokens": total_completion_tokens,
+        "total_cached_tokens": total_cached_tokens,
+        "total_tokens": total_tokens_agg,
+    }
+
+    print(json.dumps(stats, indent=2))
 
 
 def cmd_delete(args) -> None:
@@ -990,6 +1061,17 @@ def main() -> None:
         help="Search across all agents/directories (default: local project only).",
     )
     p_blame.set_defaults(func=cmd_blame)
+
+    # stats
+    p_stats = sub.add_parser(
+        "stats",
+        help="Show aggregate statistics as pretty-printed JSON.",
+    )
+    p_stats.add_argument(
+        "--all", action="store_true",
+        help="Include all agents/directories (default: current directory only).",
+    )
+    p_stats.set_defaults(func=cmd_stats)
 
     # delete
     p_delete = sub.add_parser(

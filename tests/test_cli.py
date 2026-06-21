@@ -274,7 +274,7 @@ def test_show_header_includes_cwd(tmp_path, monkeypatch, capsys):
     assert "**Directory:** /home/user/myrepo" in out
 
 
-def test_cmd_info_prints_metadata(tmp_path, monkeypatch, capsys):
+def test_cmd_info_prints_json(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
@@ -286,13 +286,15 @@ def test_cmd_info_prints_metadata(tmp_path, monkeypatch, capsys):
     cli.cmd_info(args)
 
     out = capsys.readouterr().out
-    assert "cl-xyz" in out
-    assert "**Agent:** claude" in out
-    assert "**Directory:** /home/user/myrepo" in out
-    assert "**Model:** claude-sonnet-4-6" in out
-    # info must not dump the conversation steps
-    assert "Step 1" not in out
-    assert "Step 2" not in out
+    data = json.loads(out)
+    assert data["id"] == "cl-xyz"
+    assert data["agent"] == "claude"
+    assert data["directory"] == "/home/user/myrepo"
+    assert data["model"] == "claude-sonnet-4-6"
+    assert data["timestamp"] == "2024-06-01T10:00:00Z"
+    assert data["first_message"] == "refactor the module"
+    # info must not include steps
+    assert "steps" not in data or isinstance(data["steps"], int)
 
 
 def test_cmd_info_not_found(tmp_path, monkeypatch, capsys):
@@ -302,8 +304,9 @@ def test_cmd_info_not_found(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit):
         cli.cmd_info(args)
 
-    err = capsys.readouterr().err
-    assert "not found" in err
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert "error" in data
 
 
 def test_main_info_command(tmp_path, monkeypatch, capsys):
@@ -318,7 +321,8 @@ def test_main_info_command(tmp_path, monkeypatch, capsys):
     cli.main()
 
     out = capsys.readouterr().out
-    assert "**Directory:** /srv/app" in out
+    data = json.loads(out)
+    assert data["directory"] == "/srv/app"
 
 
 def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
@@ -335,3 +339,63 @@ def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
 
     err = capsys.readouterr().err
     assert "out of range" in err
+
+
+# ── cmd_stats ────────────────────────────────────────────────────────────────
+
+
+def test_cmd_stats_empty(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([]))
+    # Also mock _local_records so that --all=False uses the mocked data
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([]))
+
+    args = argparse.Namespace(all=False)
+    cli.cmd_stats(args)
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_trajectories"] == 0
+    assert data["agents"] == {}
+
+
+def test_cmd_stats_with_trajectories(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f1 = tmp_path / "session1.jsonl"
+    _write_claude_trajectory_with_cwd(f1, cwd="/home/user/repo1")
+    rec1 = cli.TrajRecord("cl-abc", "claude", "2024-06-01T00:00:00Z", "fix it", f1)
+
+    f2 = tmp_path / "session2.jsonl"
+    _write_claude_trajectory_with_cwd(f2, cwd="/home/user/repo2")
+    rec2 = cli.TrajRecord("cl-def", "claude", "2024-06-02T00:00:00Z", "add feature", f2)
+
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec1, rec2]))
+
+    args = argparse.Namespace(all=True)
+    cli.cmd_stats(args)
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_trajectories"] == 2
+    assert data["parsed_trajectories"] == 2
+    assert data["agents"] == {"claude": 2}
+    assert data["total_tool_calls"] >= 0
+    assert data["total_tokens"] >= 0
+
+
+def test_main_stats_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory_with_cwd(f, cwd="/srv/app")
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-06-01T00:00:00Z", "fix it", f)
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([rec]))
+    monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli", "stats"])
+
+    cli.main()
+
+    out = capsys.readouterr().out
+    data = json.loads(out)
+    assert data["total_trajectories"] == 1
+    assert data["agents"] == {"claude": 1}
