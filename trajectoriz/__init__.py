@@ -1315,6 +1315,82 @@ def pick_trajectory_id(kind: str | None, repo_root: str, before: dict[str, float
 
 # ── Codex exec --json stdout parsing ─────────────────────────────────────────
 
+def _parse_simple_yaml(text: str) -> dict:
+    """Parse a minimal YAML subset: top-level string keys mapping to string lists."""
+    result: dict = {}
+    current_key: str | None = None
+    for line in text.splitlines():
+        stripped = line.rstrip()
+        if not stripped or stripped.lstrip().startswith("#"):
+            continue
+        if stripped.startswith("  ") or stripped.startswith("\t"):
+            item = stripped.lstrip()
+            if item.startswith("- ") and current_key is not None:
+                result.setdefault(current_key, []).append(item[2:].strip())
+        elif ":" in stripped:
+            key, _, value = stripped.partition(":")
+            current_key = key.strip()
+            v = value.strip()
+            if v:
+                result[current_key] = v
+    return result
+
+
+def load_config(config_path=None) -> dict:
+    """Load ~/.config/trajectoriz.yaml; returns {} if missing or unreadable."""
+    path = Path(config_path) if config_path else Path.home() / ".config" / "trajectoriz.yaml"
+    if not path.exists():
+        return {}
+    try:
+        return _parse_simple_yaml(path.read_text(encoding="utf-8"))
+    except OSError:
+        return {}
+
+
+def _detect_jsonl_format(path: Path) -> str | None:
+    """Sniff up to 30 lines of a JSONL file and return the detected format name."""
+    scores: dict[str, int] = {"claude": 0, "codex": 0, "copilot": 0, "agent_probe": 0}
+    try:
+        with path.open(encoding="utf-8") as f:
+            for i, raw in enumerate(f):
+                if i >= 30:
+                    break
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                t = d.get("type", "")
+                if "sessionId" in d or (t in ("user", "assistant") and "message" in d):
+                    scores["claude"] += 2
+                if t == "session_meta" or (t == "event_msg" and "payload" in d):
+                    scores["codex"] += 2
+                if t in ("session.start", "user.message", "assistant.message", "assistant.turn_end"):
+                    scores["copilot"] += 2
+                if t in ("session_start", "tool_call", "tool_result") or (
+                    t == "assistant" and "content" in d and "ts" in d
+                ):
+                    scores["agent_probe"] += 2
+    except OSError:
+        return None
+    best = max(scores, key=lambda k: scores[k])
+    return best if scores[best] > 0 else None
+
+
+def iter_extra_folder_trajectories(folders: list[str]):
+    """Yield (path, format_name) for JSONL files in the given extra folders."""
+    for folder_str in folders:
+        folder = Path(folder_str).expanduser()
+        if not folder.is_dir():
+            continue
+        for p in sorted(folder.rglob("*.jsonl")):
+            fmt = _detect_jsonl_format(p)
+            if fmt:
+                yield p, fmt
+
+
 def codex_exec_jsonl_final_message(stdout_text: str) -> str | None:
     """Return the last agent_message text from `codex exec --json` stdout."""
     messages: list[str] = []

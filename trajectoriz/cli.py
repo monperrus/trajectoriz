@@ -78,6 +78,26 @@ def _cwd_matches(cwd_field: Optional[str], target: str) -> bool:
         return False
 
 
+def _extra_folder_records() -> Iterator[TrajRecord]:
+    """Yield TrajRecord objects from directories listed in ~/.config/trajectoriz.yaml."""
+    cfg = tz.load_config()
+    folders = cfg.get("folders", [])
+    if isinstance(folders, str):
+        folders = [folders]
+    for p, fmt in tz.iter_extra_folder_trajectories(folders):
+        if fmt == "claude":
+            ts, msg = tz.get_first_user_message_claude(p)
+        elif fmt == "codex":
+            ts, msg = _codex_first_user_message(p)
+        elif fmt == "copilot":
+            ts, msg = tz.get_first_user_message_copilot(p)
+        elif fmt == "agent_probe":
+            ts, msg = tz.get_first_user_message_agent_probe(p)
+        else:
+            ts, msg = "", ""
+        yield TrajRecord(_short_id(fmt[:2], str(p)), fmt, ts, msg, p)
+
+
 def _local_records(cwd: str) -> Iterator[TrajRecord]:
     """Yield only trajectories whose working directory is cwd or a subdirectory."""
     for p in tz.iter_claude_project_trajectories(cwd):
@@ -129,6 +149,12 @@ def _local_records(cwd: str) -> Iterator[TrajRecord]:
                 sess.first_user_message or "",
                 {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
             )
+
+    for rec in _extra_folder_records():
+        if isinstance(rec.source, Path):
+            traj_cwd = tz.get_cwd_from_trajectory(rec.source)
+            if _cwd_matches(traj_cwd, cwd):
+                yield rec
 
 
 def _all_records() -> Iterator[TrajRecord]:
@@ -186,6 +212,8 @@ def _all_records() -> Iterator[TrajRecord]:
                 "",
                 {"type": "copilot_db", "session_id": session_id, "db_path": str(copilot_db)},
             )
+
+    yield from _extra_folder_records()
 
 
 def _cache_dir(cache_dir=None) -> Path:
