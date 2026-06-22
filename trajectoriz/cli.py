@@ -81,9 +81,13 @@ def _cwd_matches(cwd_field: Optional[str], target: str) -> bool:
 def _extra_folder_records() -> Iterator[TrajRecord]:
     """Yield TrajRecord objects from directories listed in ~/.config/trajectoriz.yaml."""
     cfg = tz.load_config()
-    folders = cfg.get("folders", [])
-    if isinstance(folders, str):
-        folders = [folders]
+    raw = cfg.get("folders", [])
+    if isinstance(raw, str):
+        folders: list[str] = [raw]
+    elif isinstance(raw, list):
+        folders = [str(f) for f in raw]
+    else:
+        folders = []
     for p, fmt in tz.iter_extra_folder_trajectories(folders):
         if fmt == "claude":
             ts, msg = tz.get_first_user_message_claude(p)
@@ -951,7 +955,12 @@ def cmd_delete(args) -> None:
 
     print(f"Found {len(matching)} trajectory(ies) with only one user message '{args.message}':")
     for r in matching:
-        src_info = str(r.source) if isinstance(r.source, Path) else str(r.source.get("session_id", ""))
+        if isinstance(r.source, Path):
+            src_info = str(r.source)
+        elif isinstance(r.source, dict):
+            src_info = str(r.source.get("session_id", ""))
+        else:
+            src_info = ""
         date = r.timestamp[:10] if r.timestamp else "—"
         print(f"  {r.id}  {r.agent:12s}  {date}  {src_info}")
 
