@@ -6,6 +6,57 @@ import json
 import pytest
 
 from trajectoriz import cli
+from trajectoriz.cli import _render_step
+
+
+def _base_step(**kwargs) -> dict:
+    base = {"step_id": 1, "source": "agent", "timestamp": None, "tool_calls": [], "observation": None, "message": None}
+    base.update(kwargs)
+    return base
+
+
+def test_render_step_tool_call_before_message():
+    step = _base_step(
+        tool_calls=[{"function_name": "read_file", "arguments": {"path": "/foo"}}],
+        message="Here is the result.",
+        observation={"results": [{"content": "file contents"}]},
+    )
+    rendered = _render_step(step)
+    tc_pos = rendered.index("**Tool call:**")
+    msg_pos = rendered.index("Here is the result.")
+    assert tc_pos < msg_pos, "tool call should appear before message"
+
+
+def test_render_step_empty_content_shows_placeholder():
+    step = _base_step(
+        tool_calls=[{"function_name": "run", "arguments": {}}],
+        observation={"results": [{"content": ""}]},
+    )
+    rendered = _render_step(step)
+    assert "*empty output*" in rendered
+
+
+def test_render_step_none_content_shows_placeholder():
+    step = _base_step(
+        tool_calls=[{"function_name": "run", "arguments": {}}],
+        observation={"results": [{"content": None}]},
+    )
+    rendered = _render_step(step)
+    assert "*empty output*" in rendered
+
+
+def test_render_step_none_observation_no_error():
+    step = _base_step(observation=None)
+    rendered = _render_step(step)
+    assert "**Tool result:**" not in rendered
+
+
+def test_render_step_message_only():
+    step = _base_step(source="user", message="Hello agent.")
+    rendered = _render_step(step)
+    assert "USER" in rendered
+    assert "Hello agent." in rendered
+    assert "**Tool call:**" not in rendered
 
 
 def test_main_without_args_shows_help(monkeypatch, capsys):
