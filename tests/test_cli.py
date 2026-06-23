@@ -228,7 +228,7 @@ def test_parse_record_unsupported_returns_none(tmp_path):
 
 
 def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory(f)
@@ -246,7 +246,7 @@ def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
 
 def test_cmd_search_content_or_query(tmp_path, monkeypatch, capsys):
     """OR query: matching either term finds the trajectory."""
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory(f)
@@ -262,7 +262,7 @@ def test_cmd_search_content_or_query(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory(f)
@@ -279,7 +279,7 @@ def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_show_step_jumps_to_correct_page(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory(f)
@@ -311,7 +311,7 @@ def _write_claude_trajectory_with_cwd(path, cwd="/home/user/myrepo"):
 
 
 def test_show_header_includes_cwd(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory_with_cwd(f, cwd="/home/user/myrepo")
@@ -326,7 +326,7 @@ def test_show_header_includes_cwd(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_info_prints_json(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory_with_cwd(f, cwd="/home/user/myrepo")
@@ -348,7 +348,7 @@ def test_cmd_info_prints_json(tmp_path, monkeypatch, capsys):
     assert "steps" not in data or isinstance(data["steps"], int)
 
 
-def test_cmd_info_not_found(tmp_path, monkeypatch, capsys):
+def test_cmd_info_not_found(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_all_records", lambda: iter([]))
 
     args = argparse.Namespace(id="cl-missing")
@@ -361,7 +361,7 @@ def test_cmd_info_not_found(tmp_path, monkeypatch, capsys):
 
 
 def test_main_info_command(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory_with_cwd(f, cwd="/srv/app")
@@ -377,7 +377,7 @@ def test_main_info_command(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory(f)
@@ -395,10 +395,10 @@ def test_cmd_show_step_out_of_range(tmp_path, monkeypatch, capsys):
 # ── cmd_stats ────────────────────────────────────────────────────────────────
 
 
-def test_cmd_stats_empty(tmp_path, monkeypatch, capsys):
+def test_cmd_stats_empty(monkeypatch, capsys):
     monkeypatch.setattr(cli, "_all_records", lambda: iter([]))
     # Also mock _local_records so that --all=False uses the mocked data
-    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([]))
+    monkeypatch.setattr(cli, "_local_records", lambda _: iter([]))
 
     args = argparse.Namespace(all=False)
     cli.cmd_stats(args)
@@ -410,7 +410,7 @@ def test_cmd_stats_empty(tmp_path, monkeypatch, capsys):
 
 
 def test_cmd_stats_with_trajectories(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f1 = tmp_path / "session1.jsonl"
     _write_claude_trajectory_with_cwd(f1, cwd="/home/user/repo1")
@@ -435,13 +435,13 @@ def test_cmd_stats_with_trajectories(tmp_path, monkeypatch, capsys):
 
 
 def test_main_stats_command(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(cli, "_cache_dir", lambda _cd=None: tmp_path / "cache")
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
 
     f = tmp_path / "session.jsonl"
     _write_claude_trajectory_with_cwd(f, cwd="/srv/app")
     rec = cli.TrajRecord("cl-abc", "claude", "2024-06-01T00:00:00Z", "fix it", f)
     monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
-    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([rec]))
+    monkeypatch.setattr(cli, "_local_records", lambda _: iter([rec]))
     monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli", "stats"])
 
     cli.main()
