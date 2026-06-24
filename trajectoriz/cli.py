@@ -695,7 +695,12 @@ def _record_row(rec: TrajRecord, show_dir: bool = False) -> str:
 
 
 def cmd_list(args) -> None:
-    source = _all_records() if args.all else _local_records(os.getcwd())
+    if args.dir:
+        source = _local_records(args.dir)
+    elif args.all:
+        source = _all_records()
+    else:
+        source = _local_records(os.getcwd())
     records = sorted(source, key=lambda r: r.timestamp, reverse=True)
 
     if args.since:
@@ -707,16 +712,17 @@ def cmd_list(args) -> None:
         print("No trajectories found.")
         return
 
-    show_dir = args.all
-    if show_dir:
+    show_dir = args.all and not args.dir
+    if args.all and not args.dir:
         header = (
             f"## All trajectories ({len(records)} total)\n\n"
             "| ID | Agent | Date | Directory | First message |\n"
             "|---|---|---|---|---|"
         )
     else:
+        search_dir = args.dir if args.dir else os.getcwd()
         header = (
-            f"## Trajectories in {os.getcwd()} ({len(records)} total)\n\n"
+            f"## Trajectories in {search_dir} ({len(records)} total)\n\n"
             "| ID | Agent | Date | First message |\n"
             "|---|---|---|---|"
         )
@@ -728,8 +734,12 @@ def cmd_list(args) -> None:
 
 def cmd_search(args) -> None:
     terms = _parse_terms(args.query)
-    # search defaults to all trajectories; --local restricts to cwd
-    source = _local_records(os.getcwd()) if args.local else _all_records()
+    if args.dir:
+        source = _local_records(args.dir)
+    elif args.local:
+        source = _local_records(os.getcwd())
+    else:
+        source = _all_records()
 
     if args.fast:
         _cmd_search_fast(args, terms, source)
@@ -1015,6 +1025,7 @@ def main() -> None:
     )
     p_list.add_argument("--last", action="store_true", help="Jump to the last page.")
     p_list.add_argument("--all", action="store_true", help="Include all agents/directories (adds Directory column).")
+    p_list.add_argument("--dir", metavar="PATH", help="Search in this directory instead of the current one.")
     p_list.add_argument(
         "--since", metavar="YYYY-MM-DD",
         help="Only show trajectories on or after this date.",
@@ -1041,6 +1052,7 @@ def main() -> None:
         "--local", action="store_true",
         help="Restrict search to the current directory (default searches all).",
     )
+    p_search.add_argument("--dir", metavar="PATH", help="Restrict search to this directory.")
     p_search.add_argument(
         "--fast", action="store_true",
         help="Search only the first message and metadata (no trajectory parsing). Much faster but misses tool call content.",
