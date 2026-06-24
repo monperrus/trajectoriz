@@ -1000,6 +1000,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="trajectoriz-cli",
         description="Search and browse past agent trajectories.",
+        epilog="Run 'trajectoriz-cli <command> -h' for help on a specific command, e.g. 'trajectoriz-cli list -h' or 'trajectoriz-cli search -h'.",
     )
 
     sub = parser.add_subparsers(dest="command", metavar="<command>")
