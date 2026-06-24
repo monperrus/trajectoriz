@@ -365,20 +365,22 @@ def _render_step(step: dict, full: bool = False) -> str:
     role = "USER" if step["source"] == "user" else "AGENT"
     ts_suffix = f" *{step['timestamp'][:19]}*" if step.get("timestamp") else ""
     lines.append(f"---\n## Step {step['step_id']} — {role}{ts_suffix}\n")
-    if step.get("message"):
-        lines.append(step["message"])
-        lines.append("")
-    for tc in step.get("tool_calls", []):
+    tool_calls = step.get("tool_calls", [])
+    results = (step.get("observation") or {}).get("results", [])
+    for tc in tool_calls:
         args_str = json.dumps(tc.get("arguments", {}), indent=2)
         if not full and len(args_str) > 600:
             args_str = args_str[:600] + "\n…"
         lines.append(f"**Tool call:** `{tc['function_name']}`")
         lines.append(f"```json\n{args_str}\n```\n")
-    for res in (step.get("observation") or {}).get("results", []):
-        content = res.get("content", "")
+    for res in results:
+        content = res.get("content", "") or "*empty output*"
         if not full and len(content) > 1000:
             content = content[:1000] + "\n…"
         lines.append(f"**Tool result:**\n```\n{content}\n```\n")
+    if step.get("message"):
+        lines.append(step["message"])
+        lines.append("")
     return "\n".join(lines)
 
 
