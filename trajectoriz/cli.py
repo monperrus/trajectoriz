@@ -3,10 +3,12 @@
 
 import argparse
 import hashlib
+import html
 import json
 import math
 import os
 import pickle
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -384,6 +386,161 @@ def _render_step(step: dict, full: bool = False) -> str:
     return "\n".join(lines)
 
 
+_ANSI_COLORS = {
+    "30": "#1a1a1a", "31": "#c0392b", "32": "#27ae60", "33": "#f39c12",
+    "34": "#2980b9", "35": "#8e44ad", "36": "#16a085", "37": "#bdc3c7",
+    "90": "#7f8c8d", "91": "#e74c3c", "92": "#2ecc71", "93": "#f1c40f",
+    "94": "#3498db", "95": "#9b59b6", "96": "#1abc9c", "97": "#ecf0f1",
+}
+
+
+def _ansi_to_html(text: str) -> str:
+    """Convert ANSI escape sequences to HTML spans."""
+    result: list[str] = []
+    depth = 0
+    for token in re.split(r"(\x1b\[[0-9;]*m)", text):
+        if not token.startswith("\x1b"):
+            result.append(html.escape(token))
+            continue
+        codes = token[2:-1].split(";")
+        for code in codes:
+            if code in ("0", ""):
+                result.append("</span>" * depth)
+                depth = 0
+            elif code == "1":
+                result.append('<span style="font-weight:bold">')
+                depth += 1
+            elif code in _ANSI_COLORS:
+                result.append(f'<span style="color:{_ANSI_COLORS[code]}">')
+                depth += 1
+    result.append("</span>" * depth)
+    return "".join(result)
+
+
+_HTML_CSS = """
+body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto;
+       padding: 0 1rem; background: #0d1117; color: #c9d1d9; }
+h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: .4rem; }
+h2 { color: #79c0ff; margin-top: 2rem; }
+.meta { color: #8b949e; font-size: .85rem; margin-bottom: 1.5rem; }
+.meta span { margin-right: 1.5rem; }
+.step { border: 1px solid #30363d; border-radius: 6px; margin: 1rem 0; overflow: hidden; }
+.step-header { padding: .4rem .8rem; font-size: .8rem; font-weight: bold;
+               text-transform: uppercase; letter-spacing: .05em; }
+.step-user .step-header  { background: #1f3a2d; color: #56d364; }
+.step-agent .step-header { background: #1a2332; color: #58a6ff; }
+.step-body { padding: .8rem; }
+.tool-block { margin: .6rem 0; border-radius: 4px; overflow: hidden;
+              border: 1px solid #30363d; }
+.tool-call-header { background: #21262d; padding: .3rem .6rem; font-size: .8rem;
+                    color: #d2a8ff; font-family: monospace; }
+.tool-result-header { background: #161b22; padding: .3rem .6rem; font-size: .8rem;
+                      color: #8b949e; }
+pre { margin: 0; padding: .6rem; background: #161b22; overflow-x: auto;
+      font-size: .82rem; white-space: pre-wrap; word-break: break-all; }
+.message { padding: .4rem 0; line-height: 1.6; }
+.collapsible summary { cursor: pointer; color: #8b949e; font-size: .8rem;
+                       padding: .3rem .6rem; background: #161b22; list-style: none; }
+.collapsible summary:hover { color: #c9d1d9; }
+.result-collapsible summary { color: #6e7681; }
+.result-collapsible[open] summary { color: #8b949e; }
+"""
+
+
+def _render_step_html(step: dict, full: bool = False) -> str:
+    role = "user" if step["source"] == "user" else "agent"
+    ts = step.get("timestamp", "")[:19]
+    label = "User" if role == "user" else "Agent"
+    lines = [f'<div class="step step-{role}">']
+    lines.append(f'<div class="step-header">{label}  <span style="font-weight:normal;opacity:.7">{ts}</span></div>')
+    lines.append('<div class="step-body">')
+
+    tool_calls = step.get("tool_calls", [])
+    results = (step.get("observation") or {}).get("results", [])
+
+    for i, tc in enumerate(tool_calls):
+        fn = tc["function_name"]
+        args = tc.get("arguments", {})
+        compact = json.dumps(args, separators=(",", ":"))
+        args_str = compact if len(compact) <= 120 else json.dumps(args, indent=2)
+        if not full and len(args_str) > 600:
+            args_str = args_str[:600] + "\n…"
+
+        lines.append('<div class="tool-block">')
+        # collapse create_tool source_code by default
+        is_create = fn == "create_tool" and "source_code" in args
+        if is_create and not full:
+            collapsed_args = {k: v for k, v in args.items() if k != "source_code"}
+            collapsed_str = json.dumps(collapsed_args, indent=2)
+            lines.append(f'<div class="tool-call-header">&#9654; {html.escape(fn)}</div>')
+            lines.append(f"<pre>{html.escape(collapsed_str)}</pre>")
+            lines.append('<details class="collapsible"><summary>source_code (click to expand)</summary>')
+            lines.append(f"<pre>{html.escape(args.get('source_code', ''))}</pre>")
+            lines.append("</details>")
+        else:
+            lines.append(f'<div class="tool-call-header">&#9654; {html.escape(fn)}</div>')
+            lines.append(f"<pre>{html.escape(args_str)}</pre>")
+
+        if i < len(results):
+            content = results[i].get("content", "") or ""
+            if not full and len(content) > 1000:
+                content = content[:1000] + "\n…"
+            rendered = _ansi_to_html(content) if content else '<span style="opacity:.5">empty output</span>'
+            lines.append('<details class="collapsible result-collapsible"><summary>&#9664; result</summary>')
+            lines.append(f"<pre>{rendered}</pre>")
+            lines.append("</details>")
+
+        lines.append("</div>")  # tool-block
+
+    # any leftover results (more results than calls — shouldn't happen but be safe)
+    for res in results[len(tool_calls):]:
+        content = res.get("content", "") or ""
+        rendered = _ansi_to_html(content) if content else '<span style="opacity:.5">empty output</span>'
+        lines.append('<div class="tool-block">')
+        lines.append('<details class="collapsible result-collapsible"><summary>&#9664; result</summary>')
+        lines.append(f"<pre>{rendered}</pre>")
+        lines.append("</details>")
+        lines.append("</div>")
+
+    if step.get("message"):
+        lines.append(f'<div class="message">{html.escape(step["message"])}</div>')
+
+    lines.append("</div></div>")  # step-body, step
+    return "\n".join(lines)
+
+
+def _trajectory_to_html(record: TrajRecord, full: bool = False) -> str:
+    traj = _parse_record(record)
+    meta_parts = [f"<span>Agent: <b>{html.escape(record.agent)}</b></span>"]
+    if record.timestamp:
+        meta_parts.append(f"<span>Date: {record.timestamp[:19]}</span>")
+    if traj:
+        if traj.model_name:
+            meta_parts.append(f"<span>Model: {html.escape(traj.model_name)}</span>")
+        if traj.cwd:
+            meta_parts.append(f"<span>Directory: {html.escape(traj.cwd)}</span>")
+        if traj.total_tool_calls:
+            meta_parts.append(f"<span>Tool calls: {traj.total_tool_calls}</span>")
+        if traj.total_tokens:
+            meta_parts.append(
+                f"<span>Tokens: {traj.total_prompt_tokens}p / "
+                f"{traj.total_completion_tokens}c / {traj.total_tokens} total</span>"
+            )
+    steps_html = "\n".join(_render_step_html(s, full=full) for s in (traj.steps if traj else []))
+    title = html.escape(record.id)
+    first_msg = html.escape((record.first_msg or "")[:120])
+    return f"""<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Trajectory {title}</title>
+<style>{_HTML_CSS}</style></head>
+<body>
+<h1>Trajectory <code>{title}</code></h1>
+<p style="color:#8b949e;font-style:italic">{first_msg}</p>
+<div class="meta">{"".join(meta_parts)}</div>
+{steps_html}
+</body></html>"""
+
+
 def _trajectory_header_and_steps(record: TrajRecord, full: bool = False) -> tuple[str, list[str]]:
     """Return (header_markdown, list_of_rendered_steps)."""
     hlines: list[str] = []
@@ -628,7 +785,12 @@ def _blame_delta(e: BlameEntry) -> str:
 
 def cmd_blame(args) -> None:
     target = Path(args.file).resolve()
-    source = _all_records() if args.all else _local_records(os.getcwd())
+    if args.dir:
+        source = _local_records(args.dir)
+    elif args.all:
+        source = _all_records()
+    else:
+        source = _local_records(os.getcwd())
     records = sorted(source, key=lambda r: r.timestamp)  # chronological order
 
     entries: list[BlameEntry] = []
@@ -838,6 +1000,10 @@ def cmd_show(args) -> None:
     if record is None:
         print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
         sys.exit(1)
+
+    if getattr(args, "html", False):
+        print(_trajectory_to_html(record, full=args.full))
+        return
 
     header, steps = _trajectory_header_and_steps(record, full=args.full)
 
@@ -1086,6 +1252,10 @@ def main() -> None:
         "--full", "--no-truncate", action="store_true",
         help="Show complete tool call arguments and results without truncation.",
     )
+    p_show.add_argument(
+        "--html", action="store_true",
+        help="Output a self-contained HTML file instead of markdown.",
+    )
     p_show.set_defaults(func=cmd_show)
 
     # info
@@ -1112,6 +1282,7 @@ def main() -> None:
         "--all", action="store_true",
         help="Search across all agents/directories (default: local project only).",
     )
+    p_blame.add_argument("--dir", metavar="PATH", help="Search in this directory instead of the current one.")
     p_blame.set_defaults(func=cmd_blame)
 
     # stats
