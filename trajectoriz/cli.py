@@ -1122,6 +1122,88 @@ def cmd_stats(args) -> None:
     print(json.dumps(stats, indent=2))
 
 
+_SHELL_TOOL_NAMES = {
+    "bash", "run_bash", "execute_bash", "shell", "run_shell",
+    "run_terminal_cmd", "run_command", "execute_command", "terminal",
+    "computer", "execute",
+}
+
+
+def _shell_command_from_tool(function_name: str, arguments: dict) -> Optional[str]:
+    """Return the shell command string if this tool call executes a shell command."""
+    fn = function_name.lower()
+    if fn not in _SHELL_TOOL_NAMES:
+        return None
+    return (
+        arguments.get("command")
+        or arguments.get("cmd")
+        or arguments.get("input")
+        or None
+    )
+
+
+def _first_word(cmd: str) -> str:
+    """Return the first word (program name) of a shell command."""
+    cmd = cmd.strip()
+    if not cmd:
+        return ""
+    # strip leading env var assignments like FOO=bar before the program
+    parts = cmd.split()
+    for part in parts:
+        if "=" not in part:
+            return part.split("/")[-1]  # basename only
+    return parts[0]
+
+
+def _count_tools_in_records(records) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for rec in records:
+        traj = _parse_record(rec)
+        if traj is None:
+            continue
+        for step in traj.steps:
+            if step["source"] != "agent":
+                continue
+            for tc in step.get("tool_calls", []):
+                cmd = _shell_command_from_tool(tc["function_name"], tc.get("arguments") or {})
+                if cmd:
+                    prog = _first_word(cmd)
+                    if prog:
+                        counts[prog] = counts.get(prog, 0) + 1
+    return counts
+
+
+def cmd_advanced_tools(args) -> None:
+    """Show unique programs called via shell tool calls, by frequency."""
+    if args.dir:
+        resolved_dir = str(Path(args.dir).resolve())
+        records = list(_local_records(resolved_dir))
+        counts = _count_tools_in_records(records)
+        label = f"all trajectories in `{resolved_dir}`"
+    else:
+        record = _find_record(args.id)
+        if record is None:
+            print(f"Error: trajectory `{args.id}` not found.", file=sys.stderr)
+            sys.exit(1)
+        traj = _parse_record(record)
+        if traj is None:
+            print(f"Error: trajectory `{args.id}` cannot be parsed.", file=sys.stderr)
+            sys.exit(1)
+        counts = _count_tools_in_records([record])
+        label = f"`{args.id}`"
+
+    if not counts:
+        print("No shell tool calls found.")
+        return
+
+    sorted_progs = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    print(f"## Programs called in {label}\n")
+    print("| Program | Count |")
+    print("|---|---|")
+    for prog, count in sorted_progs:
+        print(f"| `{prog}` | {count} |")
+
+
 def cmd_delete(args) -> None:
     """Delete trajectories that have only one user message matching the given text."""
     source = _all_records() if args.all else _local_records(os.getcwd())
@@ -1312,6 +1394,23 @@ def main() -> None:
     )
     p_delete.add_argument("--all", action="store_true", help="Search across all agents/directories.")
     p_delete.set_defaults(func=cmd_delete)
+
+    # advanced
+    p_advanced = sub.add_parser(
+        "advanced",
+        help="Advanced analysis commands.",
+    )
+    adv_sub = p_advanced.add_subparsers(dest="advanced_command", metavar="<subcommand>")
+    adv_sub.required = True
+
+    p_adv_tools = adv_sub.add_parser(
+        "tools",
+        help="Show programs called via shell tool calls, by frequency.",
+    )
+    p_adv_tools_group = p_adv_tools.add_mutually_exclusive_group(required=True)
+    p_adv_tools_group.add_argument("--id", metavar="ID", help="Single trajectory ID.")
+    p_adv_tools_group.add_argument("--dir", metavar="PATH", help="Aggregate over all trajectories in this directory.")
+    p_adv_tools.set_defaults(func=cmd_advanced_tools)
 
     if len(sys.argv) == 1:
         parser.print_help()
