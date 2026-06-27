@@ -2,12 +2,10 @@
 """trajectoriz-cli: search and browse past agent trajectories."""
 
 import argparse
-import hashlib
 import html
 import json
 import math
 import os
-import pickle
 import re
 import sys
 from dataclasses import dataclass
@@ -21,292 +19,27 @@ DEFAULT_SHOW_PAGE_SIZE = 20   # steps per page
 DEFAULT_LIST_PAGE_SIZE = 50   # trajectories per page
 
 
-@dataclass
-class TrajRecord:
-    id: str
-    agent: str
-    timestamp: str
-    first_msg: str
-    source: object  # Path for JSONL files; dict for DB sessions
-
-
-def _short_id(prefix: str, key: str) -> str:
-    return f"{prefix}-{hashlib.sha256(key.encode()).hexdigest()[:8]}"
-
-
-def _hermes_ts(started_at) -> str:
-    """Convert a Hermes float Unix timestamp to an ISO-8601 string."""
-    if not started_at:
-        return ""
-    import datetime
-    try:
-        return datetime.datetime.fromtimestamp(float(started_at)).isoformat()
-    except (ValueError, OSError):
-        return ""
-
-
-def _codex_first_user_message(path: Path) -> tuple[str, str]:
-    ts = ""
-    try:
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    d = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not ts:
-                    ts = d.get("timestamp", "")
-                if d.get("type") == "event_msg":
-                    p = d.get("payload") or {}
-                    if p.get("type") == "user_message":
-                        msg = (p.get("message") or "").strip()
-                        if msg:
-                            return ts, msg
-    except OSError:
-        pass
-    return ts, ""
-
-
-def _cwd_matches(cwd_field: Optional[str], target: str) -> bool:
-    """True if cwd_field is target or a subdirectory of target."""
-    if not cwd_field:
-        return False
-    try:
-        return Path(cwd_field) == Path(target) or Path(cwd_field).is_relative_to(Path(target))
-    except (ValueError, TypeError):
-        return False
-
-
-def _extra_folder_records() -> Iterator[TrajRecord]:
-    """Yield TrajRecord objects from directories listed in ~/.config/trajectoriz.yaml."""
-    cfg = tz.load_config()
-    raw = cfg.get("folders", [])
-    if isinstance(raw, str):
-        folders: list[str] = [raw]
-    elif isinstance(raw, list):
-        folders = [str(f) for f in raw]
-    else:
-        folders = []
-    for p, fmt in tz.iter_extra_folder_trajectories(folders):
-        if fmt == "claude":
-            ts, msg = tz.get_first_user_message_claude(p)
-        elif fmt == "codex":
-            ts, msg = _codex_first_user_message(p)
-        elif fmt == "copilot":
-            ts, msg = tz.get_first_user_message_copilot(p)
-        elif fmt == "agent_probe":
-            ts, msg = tz.get_first_user_message_agent_probe(p)
-        else:
-            ts, msg = "", ""
-        yield TrajRecord(_short_id(fmt[:2], str(p)), fmt, ts, msg, p)
-
-
-def _local_records(cwd: str) -> Iterator[TrajRecord]:
-    """Yield only trajectories whose working directory is cwd or a subdirectory."""
-    for p in tz.iter_claude_project_trajectories(cwd):
-        ts, msg = tz.get_first_user_message_claude(p)
-        yield TrajRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
-
-    for p in tz.iter_codex_rollout_files():
-        if _cwd_matches(tz.get_cwd_from_trajectory(p), cwd):
-            ts, msg = _codex_first_user_message(p)
-            yield TrajRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
-
-    for p in tz.iter_copilot_event_trajectories():
-        if _cwd_matches(tz.get_cwd_from_trajectory(p), cwd):
-            ts, msg = tz.get_first_user_message_copilot(p)
-            yield TrajRecord(_short_id("cp", str(p)), "copilot", ts, msg, p)
-
-    for p in tz.iter_agent_probe_trajectories():
-        if _cwd_matches(tz.get_cwd_from_trajectory(p), cwd):
-            ts, msg = tz.get_first_user_message_agent_probe(p)
-            yield TrajRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
-
-    for sess in tz.iter_opencode_sessions():
-        if _cwd_matches(sess.directory, cwd):
-            yield TrajRecord(
-                _short_id("oc", sess.id),
-                "opencode",
-                str(sess.time_updated or sess.time_created or ""),
-                sess.first_prompt,
-                {"type": "opencode", "session_id": sess.id, "model": sess.model, "dir": sess.directory},
-            )
-
-    for sess in tz.iter_codex_db_sessions():
-        if _cwd_matches(sess.cwd, cwd):
-            yield TrajRecord(
-                _short_id("cd", str(sess.id)),
-                "codex_db",
-                str(sess.updated_at_ms or ""),
-                sess.first_user_message or "",
-                {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd,
-                 "rollout_path": sess.rollout_path},
-            )
-
-    for sess in tz.iter_hermes_sessions():
-        if _cwd_matches(sess.cwd, cwd):
-            yield TrajRecord(
-                _short_id("hm", sess.id),
-                "hermes",
-                _hermes_ts(sess.started_at),
-                sess.first_user_message or "",
-                {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
-            )
-
-    for rec in _extra_folder_records():
-        if isinstance(rec.source, Path):
-            traj_cwd = tz.get_cwd_from_trajectory(rec.source)
-            if _cwd_matches(traj_cwd, cwd):
-                yield rec
+TrajRecord = tz.TrajectoryRecord
 
 
 def _all_records() -> Iterator[TrajRecord]:
-    for p in tz.iter_claude_trajectories():
-        ts, msg = tz.get_first_user_message_claude(p)
-        yield TrajRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
+    yield from tz.iter_all_records()
 
-    for p in tz.iter_codex_rollout_files():
-        ts, msg = _codex_first_user_message(p)
-        yield TrajRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
 
-    for p in tz.iter_copilot_event_trajectories():
-        ts, msg = tz.get_first_user_message_copilot(p)
-        yield TrajRecord(_short_id("cp", str(p)), "copilot", ts, msg, p)
-
-    for p in tz.iter_agent_probe_trajectories():
-        ts, msg = tz.get_first_user_message_agent_probe(p)
-        yield TrajRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
-
-    for sess in tz.iter_opencode_sessions():
-        yield TrajRecord(
-            _short_id("oc", sess.id),
-            "opencode",
-            str(sess.time_updated or sess.time_created or ""),
-            sess.first_prompt,
-            {"type": "opencode", "session_id": sess.id, "model": sess.model, "dir": sess.directory},
-        )
-
-    for sess in tz.iter_codex_db_sessions():
-        yield TrajRecord(
-            _short_id("cd", str(sess.id)),
-            "codex_db",
-            str(sess.updated_at_ms or ""),
-            sess.first_user_message or "",
-            {"type": "codex_db", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd,
-             "rollout_path": sess.rollout_path},
-        )
-
-    for sess in tz.iter_hermes_sessions():
-        yield TrajRecord(
-            _short_id("hm", sess.id),
-            "hermes",
-            _hermes_ts(sess.started_at),
-            sess.first_user_message or "",
-            {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
-        )
-
-    copilot_db = Path.home() / ".copilot" / "session-store.db"
-    if copilot_db.exists():
-        for session_id, created_at in tz.iter_copilot_sessions():
-            yield TrajRecord(
-                _short_id("gh", str(session_id)),
-                "copilot_db",
-                str(created_at or ""),
-                "",
-                {"type": "copilot_db", "session_id": session_id, "db_path": str(copilot_db)},
-            )
-
-    yield from _extra_folder_records()
+def _local_records(cwd: str) -> Iterator[TrajRecord]:
+    yield from tz.iter_local_records(cwd)
 
 
 def _cache_dir(cache_dir=None) -> Path:
-    d = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "trajectoriz"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return tz._cache_dir(cache_dir)
 
 
 def _cached_parse(cache_key: str, mtime: float, parse_fn, cache_dir=None) -> tz.ParsedTrajectory:
-    """Return parse_fn(), using an mtime-keyed pickle cache to avoid re-parsing."""
-    cpath = _cache_dir(cache_dir) / f"{hashlib.sha256(cache_key.encode()).hexdigest()}.pkl"
-    if cpath.exists():
-        try:
-            with cpath.open("rb") as f:
-                cached_mtime, traj = pickle.load(f)
-            if cached_mtime == mtime:
-                return traj
-        except Exception:
-            pass
-    traj = parse_fn()
-    try:
-        with cpath.open("wb") as f:
-            pickle.dump((mtime, traj), f)
-    except OSError:
-        pass
-    return traj
+    return tz._cached_parse(cache_key, mtime, parse_fn, cache_dir)
 
 
 def _parse_record(record: TrajRecord, cache_dir=None) -> Optional[tz.ParsedTrajectory]:
-    """Parse a trajectory record into a ParsedTrajectory, or None if unsupported."""
-    if isinstance(record.source, Path):
-        path = record.source
-        try:
-            mtime = path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        parsers = {
-            "claude": tz.parse_claude_trajectory,
-            "codex": tz.parse_codex_trajectory,
-            "copilot": tz.parse_copilot_event_trajectory,
-            "agent_probe": tz.parse_agent_probe_trajectory,
-        }
-        parse_fn = parsers.get(record.agent)
-        if parse_fn is None:
-            return None
-        return _cached_parse(f"{record.agent}:{path}", mtime, lambda: parse_fn(path), cache_dir)
-
-    if isinstance(record.source, dict) and record.source.get("type") == "codex_db":
-        rollout_path = record.source.get("rollout_path")
-        if rollout_path:
-            path = Path(rollout_path)
-            if path.exists():
-                try:
-                    mtime = path.stat().st_mtime
-                except OSError:
-                    mtime = 0.0
-                return _cached_parse(
-                    f"codex_db:{record.source['session_id']}", mtime,
-                    lambda p=path: tz.parse_codex_trajectory(p), cache_dir,
-                )
-        return None
-
-    if isinstance(record.source, dict) and record.source.get("type") == "copilot_db":
-        db_path = Path(record.source["db_path"])
-        session_id = record.source["session_id"]
-        try:
-            mtime = db_path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        return _cached_parse(
-            f"copilot_db:{db_path}:{session_id}", mtime,
-            lambda: tz.parse_copilot_trajectory(db_path, session_id), cache_dir,
-        )
-
-    if isinstance(record.source, dict) and record.source.get("type") == "hermes":
-        session_id = record.source["session_id"]
-        db_path = Path.home() / ".hermes" / "state.db"
-        try:
-            mtime = db_path.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        return _cached_parse(
-            f"hermes:{session_id}", mtime,
-            lambda sid=session_id: tz.parse_hermes_trajectory(sid), cache_dir,
-        )
-
-    return None
+    return tz.parse_record(record, cache_dir)
 
 
 def _step_search_blobs(step: dict) -> list[str]:

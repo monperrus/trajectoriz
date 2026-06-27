@@ -14,9 +14,11 @@ pip install trajectoriz
 from trajectoriz import (
     iter_claude_trajectories,
     iter_claude_project_trajectories,
+    iter_records,
     iter_codex_trajectories,
     iter_codex_rollout_files,
     iter_codex_db_sessions,
+    parse_record,
     iter_pi_trajectories,
     iter_cursor_trajectories,
     iter_copilot_event_trajectories,
@@ -36,6 +38,12 @@ for path in iter_claude_project_trajectories("/path/to/repo"):
 # List Codex CLI session files
 for path in iter_codex_trajectories():
     print(path)
+
+# Iterate records across all supported sources and parse them uniformly
+for record in iter_records():
+    trajectory = parse_record(record)
+    if trajectory is not None:
+        print(record.agent, len(trajectory.steps))
 
 # List Codex CLI rollout files
 for path in iter_codex_rollout_files():

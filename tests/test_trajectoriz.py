@@ -1,5 +1,7 @@
 """Tests for trajectoriz."""
 
+import json
+
 from trajectoriz import __version__
 
 
@@ -242,8 +244,6 @@ def test_get_first_user_message_agent_probe_user_type(tmp_path):
 
 
 def test_get_first_user_message_dispatcher(tmp_path):
-    import json
-
     from trajectoriz import get_first_user_message
 
     claude_dir = tmp_path / ".claude" / "projects" / "repo"
@@ -258,6 +258,95 @@ def test_get_first_user_message_dispatcher(tmp_path):
     with mock.patch("trajectoriz.Path.home", return_value=tmp_path):
         ts, text = get_first_user_message(f)
     assert text == "dispatched"
+
+
+def test_iter_records_all_exposes_public_record_api(tmp_path, monkeypatch):
+    from trajectoriz import TrajectoryRecord, iter_records
+
+    claude_dir = tmp_path / ".claude" / "projects" / "repo"
+    claude_dir.mkdir(parents=True)
+    f = claude_dir / "session.jsonl"
+    f.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"content": "public api"},
+            }
+        )
+        + "\n"
+    )
+
+    monkeypatch.setattr("trajectoriz.Path.home", lambda: tmp_path)
+
+    records = list(iter_records())
+    assert len(records) == 1
+    record = records[0]
+    assert isinstance(record, TrajectoryRecord)
+    assert record.agent == "claude"
+    assert record.first_msg == "public api"
+
+
+def test_iter_records_local_filters_by_cwd(tmp_path, monkeypatch):
+    from trajectoriz import claude_project_dir, iter_records
+
+    repo_root = "/tmp/my-repo"
+    project_dir = claude_project_dir(repo_root, claude_dir=tmp_path / ".claude")
+    project_dir.mkdir(parents=True)
+    f = project_dir / "session.jsonl"
+    f.write_text(
+        json.dumps(
+            {
+                "type": "user",
+                "timestamp": "2024-01-01T00:00:00Z",
+                "message": {"content": "repo local"},
+            }
+        )
+        + "\n"
+    )
+
+    monkeypatch.setattr("trajectoriz.Path.home", lambda: tmp_path)
+
+    records = list(iter_records(cwd=repo_root))
+    assert [record.first_msg for record in records] == ["repo local"]
+
+
+def test_parse_record_public_api(tmp_path):
+    from trajectoriz import TrajectoryRecord, parse_record
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "user",
+                        "sessionId": "s1",
+                        "timestamp": "2024-01-01T00:00:00Z",
+                        "message": {"content": "fix the bug"},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "timestamp": "2024-01-01T00:01:00Z",
+                        "message": {
+                            "model": "claude-sonnet-4-6",
+                            "content": [{"type": "text", "text": "Done."}],
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n"
+    )
+
+    record = TrajectoryRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    traj = parse_record(record, cache_dir=tmp_path / "cache")
+
+    assert traj is not None
+    assert traj.session_id == "s1"
+    assert len(traj.steps) == 2
 
 
 def test_get_cwd_from_trajectory(tmp_path):
