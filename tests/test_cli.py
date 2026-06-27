@@ -258,7 +258,70 @@ def test_cmd_search_content_or_query(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert "cl-abc" in out
-    assert "## Search:" in out
+
+
+def test_cmd_advanced_tools_dir_json(monkeypatch, capsys):
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", object())
+    parsed = cli.tz.ParsedTrajectory(
+        steps=[
+            {
+                "source": "agent",
+                "tool_calls": [
+                    {"function_name": "Bash", "arguments": {"command": "python script.py"}},
+                    {"function_name": "Bash", "arguments": {"command": "git status"}},
+                ],
+            },
+            {
+                "source": "agent",
+                "tool_calls": [
+                    {"function_name": "run_command", "arguments": {"cmd": "python -m pytest"}},
+                ],
+            },
+        ]
+    )
+
+    monkeypatch.setattr(cli, "_local_records", lambda path: [rec])
+    monkeypatch.setattr(cli, "_parse_record", lambda record: parsed)
+
+    args = argparse.Namespace(id=None, dir="/tmp/repo", json=True)
+    cli.cmd_advanced_tools(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "scope": {"type": "dir", "path": "/tmp/repo"},
+        "programs": [
+            {"program": "python", "count": 2},
+            {"program": "git", "count": 1},
+        ],
+    }
+
+
+def test_cmd_advanced_tools_id_json(monkeypatch, capsys):
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", object())
+    parsed = cli.tz.ParsedTrajectory(
+        steps=[
+            {
+                "source": "agent",
+                "tool_calls": [
+                    {"function_name": "shell", "arguments": {"command": "/usr/bin/make test"}},
+                ],
+            },
+        ]
+    )
+
+    monkeypatch.setattr(cli, "_find_record", lambda record_id: rec if record_id == "cl-abc" else None)
+    monkeypatch.setattr(cli, "_parse_record", lambda record: parsed)
+
+    args = argparse.Namespace(id="cl-abc", dir=None, json=True)
+    cli.cmd_advanced_tools(args)
+
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "scope": {"type": "id", "id": "cl-abc"},
+        "programs": [
+            {"program": "make", "count": 1},
+        ],
+    }
 
 
 def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):

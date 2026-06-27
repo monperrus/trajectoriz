@@ -1173,6 +1173,17 @@ def _count_tools_in_records(records) -> dict[str, int]:
     return counts
 
 
+def _advanced_tools_json(scope: dict[str, str], counts: dict[str, int]) -> dict[str, object]:
+    sorted_progs = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return {
+        "scope": scope,
+        "programs": [
+            {"program": prog, "count": count}
+            for prog, count in sorted_progs
+        ],
+    }
+
+
 def cmd_advanced_tools(args) -> None:
     """Show unique programs called via shell tool calls, by frequency."""
     if args.dir:
@@ -1180,6 +1191,7 @@ def cmd_advanced_tools(args) -> None:
         records = list(_local_records(resolved_dir))
         counts = _count_tools_in_records(records)
         label = f"all trajectories in `{resolved_dir}`"
+        scope = {"type": "dir", "path": resolved_dir}
     else:
         record = _find_record(args.id)
         if record is None:
@@ -1191,6 +1203,11 @@ def cmd_advanced_tools(args) -> None:
             sys.exit(1)
         counts = _count_tools_in_records([record])
         label = f"`{args.id}`"
+        scope = {"type": "id", "id": args.id}
+
+    if args.json:
+        print(json.dumps(_advanced_tools_json(scope, counts), indent=2))
+        return
 
     if not counts:
         print("No shell tool calls found.")
@@ -1410,6 +1427,10 @@ def main() -> None:
     p_adv_tools_group = p_adv_tools.add_mutually_exclusive_group(required=True)
     p_adv_tools_group.add_argument("--id", metavar="ID", help="Single trajectory ID.")
     p_adv_tools_group.add_argument("--dir", metavar="PATH", help="Aggregate over all trajectories in this directory.")
+    p_adv_tools.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of a Markdown table.",
+    )
     p_adv_tools.set_defaults(func=cmd_advanced_tools)
 
     if len(sys.argv) == 1:

@@ -94,6 +94,9 @@ trajectoriz-cli show cl-1234abcd --last
 # Blame a file — show every agent edit in chronological order with line deltas
 trajectoriz-cli blame src/main.py
 
+# Aggregate shell-invoked programs for a repo as JSON
+trajectoriz-cli advanced tools --dir /path/to/repo --json
+
 # Sample output:
 # | Timestamp           | Agent       | Traj ID      | Op    | Delta       | First message         |
 # | 2026-05-31T11:31:07 | agent_probe | ap-f5515937  | write | +55 lines   | run checklist ...     |
