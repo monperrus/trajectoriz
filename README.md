@@ -10,13 +10,45 @@ pip install trajectoriz
 
 ## Features
 
-- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes, agent_probe and more through a single `iter_records()` / `parse_record()` interface
+- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
 - **Full-content search** — three backends: in-process `grep` (default, no setup), `recoll` (Xapian index), `sqlite` (FTS5 index)
-- **CLI** — list, search, show, blame, stats, and advanced shell-program analysis
 - **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
 
-## Usage
+## CLI
+
+```bash
+# List trajectories in the current directory
+trajectoriz-cli list
+
+# Search all trajectories for a keyword (in-process grep, default)
+# Show a trajectory (markdown, paginated)
+trajectoriz-cli show cl-1234abcd
+trajectoriz-cli show cl-1234abcd --last
+trajectoriz-cli show cl-1234abcd --html > out.html
+
+# Blame a file — every agent edit in chronological order with line deltas
+trajectoriz-cli blame src/main.py
+
+# Aggregate shell-invoked programs across a repo
+trajectoriz-cli advanced tools --dir /path/to/repo --json
+
+trajectoriz-cli search raven
+# Search backends
+trajectoriz-cli search foo --backend grep     # in-process substring scan (default)
+trajectoriz-cli search foo --backend recoll   # Xapian index via recoll CLI
+trajectoriz-cli search foo --backend sqlite   # local SQLite FTS5 index
+# Metadata-only search (no trajectory parsing, much faster)
+trajectoriz-cli search foo --fast
+
+# Build / update the recoll and SQLite indexes
+trajectoriz-cli refresh           # both
+trajectoriz-cli refresh --no-sqlite   # recoll only
+trajectoriz-cli refresh --no-recoll   # SQLite only
+
+```
+
+## API
 
 ```python
 from trajectoriz import iter_records, parse_record
@@ -30,43 +62,6 @@ for record in iter_records(cwd="/path/to/repo"):
     trajectory = parse_record(record)
     if trajectory is not None:
         print(f"{record.agent}: {len(trajectory.steps)} steps, {trajectory.total_tokens} tokens")
-```
-
-## CLI
-
-```bash
-# List trajectories in the current directory
-trajectoriz-cli list
-
-# Search all trajectories for a keyword (in-process grep, default)
-trajectoriz-cli search raven
-
-# OR search — matches any of the terms
-trajectoriz-cli search "theraven\|raven\|password"
-
-# Metadata-only search (no trajectory parsing, much faster)
-trajectoriz-cli search foo --fast
-
-# Search backends
-trajectoriz-cli search foo --backend grep     # in-process substring scan (default)
-trajectoriz-cli search foo --backend recoll   # Xapian index via recoll CLI
-trajectoriz-cli search foo --backend sqlite   # local SQLite FTS5 index
-
-# Build / update the recoll and SQLite indexes
-trajectoriz-cli refresh           # both
-trajectoriz-cli refresh --no-sqlite   # recoll only
-trajectoriz-cli refresh --no-recoll   # SQLite only
-
-# Show a trajectory (markdown, paginated)
-trajectoriz-cli show cl-1234abcd
-trajectoriz-cli show cl-1234abcd --last
-trajectoriz-cli show cl-1234abcd --html > out.html
-
-# Blame a file — every agent edit in chronological order with line deltas
-trajectoriz-cli blame src/main.py
-
-# Aggregate shell-invoked programs across a repo
-trajectoriz-cli advanced tools --dir /path/to/repo --json
 ```
 
 ## License
