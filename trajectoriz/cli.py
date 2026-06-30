@@ -1027,13 +1027,22 @@ def cmd_refresh(args) -> None:
     filter_dst.chmod(0o755)
 
     if not args.config_only:
-        env = {**os.environ, "RECOLL_CONFDIR": str(confdir)}
-        print(f"Indexing: {topdirs_str or '(none)'}")
-        result = subprocess.run(["recollindex"], env=env)
-        if result.returncode != 0:
-            print("recollindex failed — is recoll installed?", file=sys.stderr)
-            sys.exit(result.returncode)
-        print("Done. Use `trajectoriz-cli search --backend recoll <query>` to search.")
+        if not args.no_recoll:
+            env = {**os.environ, "RECOLL_CONFDIR": str(confdir)}
+            print(f"recoll: indexing {topdirs_str or '(none)'}")
+            result = subprocess.run(["recollindex"], env=env)
+            if result.returncode != 0:
+                print("recollindex failed — is recoll installed?", file=sys.stderr)
+                sys.exit(result.returncode)
+
+        if not args.no_sqlite:
+            from trajectoriz._fts import build_index, fts_db_path
+            db_path = fts_db_path()
+            print(f"sqlite: building FTS index at {db_path}")
+            indexed, skipped = build_index(tz.iter_all_records(), db_path=db_path)
+            print(f"sqlite: {indexed} indexed, {skipped} skipped (up to date)")
+
+        print("Done.")
     else:
         print(f"Config written to {confdir}/ (skipped indexing).")
 
@@ -1216,7 +1225,15 @@ def main() -> None:
     )
     p_refresh.add_argument(
         "--config-only", action="store_true",
-        help="Write config files without running recollindex.",
+        help="Write recoll config files without indexing.",
+    )
+    p_refresh.add_argument(
+        "--no-recoll", action="store_true",
+        help="Skip recollindex (only build the SQLite FTS index).",
+    )
+    p_refresh.add_argument(
+        "--no-sqlite", action="store_true",
+        help="Skip SQLite FTS indexing (only run recollindex).",
     )
     p_refresh.set_defaults(func=cmd_refresh)
 

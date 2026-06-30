@@ -225,23 +225,33 @@ class RecollBackend(SearchBackend):
 
 
 class SqliteBackend(SearchBackend):
-    """FTS5 search via a local SQLite index built by `trajectoriz-cli index`.
+    """FTS5 search via a local SQLite index at ~/.cache/trajectoriz/fts.db.
 
-    Not yet implemented. To use this backend:
-      1. Run `trajectoriz-cli index` to build the FTS index.
-      2. Pass `--backend sqlite` to `trajectoriz-cli search`.
+    Run `trajectoriz-cli refresh` to build or update the index.
+    Note: uses word tokenisation — matches whole words, not substrings.
     """
+
+    def __init__(self, db_path: Path | None = None) -> None:
+        self._db_path = db_path
 
     def search(
         self,
         records: Iterable[TrajRecord],
         terms: list[str],
     ) -> list[SearchMatch]:
-        raise NotImplementedError(
-            "sqlite backend is not yet implemented.\n"
-            "Run `trajectoriz-cli index` to build the FTS index,\n"
-            "then re-run with --backend sqlite."
-        )
+        from trajectoriz._fts import fts_db_path, search_fts
+
+        path = self._db_path or fts_db_path()
+        if not path.exists():
+            raise NotImplementedError(
+                f"FTS index not found at {path}.\n"
+                "Run `trajectoriz-cli refresh` to build it,\n"
+                "then re-run with --backend sqlite."
+            )
+        try:
+            return search_fts(terms, db_path=path)
+        except Exception as exc:
+            raise NotImplementedError(str(exc)) from exc
 
 
 _BACKENDS: dict[str, type[SearchBackend]] = {
