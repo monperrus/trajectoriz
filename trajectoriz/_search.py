@@ -15,6 +15,9 @@ TrajRecord = tz.TrajectoryRecord
 
 _HOME = Path.home()
 _RECOLL_CONFDIR = _HOME / ".recoll-trajectories"
+# Xapian candidates to fetch before step-level grep. Higher = better recall but
+# proportionally slower (each candidate file is fully parsed). 200 keeps p50
+# latency under ~1 s while still covering the highest-ranked results.
 _RECOLL_MAX_CANDIDATES = 200
 
 # Path prefix → (agent name, short_id prefix)
@@ -250,8 +253,16 @@ class SqliteBackend(SearchBackend):
             )
         try:
             return search_fts(terms, db_path=path)
-        except Exception as exc:
+        except FileNotFoundError as exc:
             raise NotImplementedError(str(exc)) from exc
+        except Exception as exc:
+            import sqlite3
+            if isinstance(exc, sqlite3.OperationalError) and "no such table" in str(exc):
+                raise NotImplementedError(
+                    f"FTS index at {path} exists but has not been populated.\n"
+                    "Run `trajectoriz-cli refresh` to build it."
+                ) from exc
+            raise
 
 
 _BACKENDS: dict[str, type[SearchBackend]] = {
