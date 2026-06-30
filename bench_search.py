@@ -9,27 +9,24 @@ Run after `trajectoriz-cli refresh` has populated both indexes.
 ## Key findings (measured on ~5400 records / 114 000 step rows)
 
 Speed (median, 3 runs):
-  recoll  65 ms – 1.8 s  (Xapian lookup → parse top-200 candidate files → grep)
-  sqlite   1 ms – 2.6 s  (FTS5 MATCH on 114 000 step rows)
-  recoll wins on rare/specific queries; sqlite wins on dense common-word queries.
+  recoll  420 ms – 2.0 s  (Xapian → grep top-200 JSONL candidates + DB-backed grep)
+  sqlite    1 ms – 2.4 s  (FTS5 MATCH on 114 000 step rows)
+  sqlite wins on rare queries; both are comparable on common ones.
 
 Result overlap (Jaccard of step-level (traj_id, step_id) pairs):
-  0.07 – 0.34 — substantially different result sets.
+  0.11 – 0.41 — both backends now cover the same corpus. Remaining divergence
+  is entirely the 200-candidate cap: recoll only parses the top-200 Xapian hits
+  for JSONL files, missing lower-ranked but still matching files. Raising the
+  cap to 2000 improves Jaccard to 0.28–0.56 but blows latency to 6–26 s.
 
-Two root causes:
-  1. Scope: recoll indexes JSONL topdirs only (~2500 files); sqlite covers all
-     5851 records including DB-backed sessions (opencode, hermes, codex_db).
-  2. Cap: RecollBackend fetches at most _RECOLL_MAX_CANDIDATES=200 Xapian hits
-     then greps within those files. Raising to 2000 improves Jaccard to 0.28–0.56
-     but blows latency to 6–26 s — not practical.
-  3. Tokenisation: recoll does substring match inside step blobs; sqlite FTS5
-     (unicode61) does word-boundary match. Recoll catches subword hits like
-     "cpython" or "python3"; sqlite misses those but finds more step rows overall
-     because it searches the full corpus.
+Tokenisation difference (explains only-recoll column, always small):
+  recoll does substring grep inside step blobs; sqlite FTS5 (unicode61) does
+  word-boundary matching. Recoll catches subword hits like "cpython" or
+  "python3"; sqlite misses those (hence a few hundred only-recoll hits).
 
 Practical guidance:
-  --backend recoll  → fast, relevance-ranked, top-200-files recall
-  --backend sqlite  → comprehensive (full corpus), word-boundary matching
+  --backend recoll  → fast, relevance-ranked, top-200-JSONL recall + all DB sessions
+  --backend sqlite  → comprehensive full-corpus FTS, word-boundary matching
   --backend grep    → full corpus + substring matching, linear scan (slowest)
 """
 from __future__ import annotations

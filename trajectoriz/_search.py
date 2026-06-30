@@ -217,13 +217,30 @@ class RecollBackend(SearchBackend):
                 "recoll index not found at ~/.recoll-trajectories/xapiandb.\n"
                 "Run `trajectoriz-cli refresh` to install the config and build the index."
             )
-        # Recoll query: join terms with OR
+
+        # JSONL-based records: Xapian lookup → step-level grep on top-N candidates.
         query = " OR ".join(terms) if len(terms) > 1 else (terms[0] if terms else "")
         candidates = _recoll_candidate_paths(query, self._confdir, self._max_candidates)
         matches: list[SearchMatch] = []
         for path in candidates:
             if path.exists():
                 matches.extend(_search_file(path, terms))
+
+        # DB-backed records (opencode, hermes, codex_db, copilot_db) have no JSONL
+        # files and cannot be indexed by recoll — grep them in-process so both
+        # backends cover the same corpus.
+        for rec in records:
+            if not isinstance(rec.source, dict):
+                continue
+            traj = tz.parse_record(rec)
+            if traj is None:
+                continue
+            for step in traj.steps:
+                for blob in _step_search_blobs(step):
+                    if _matches_any(blob, terms):
+                        matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
+                        break
+
         return matches
 
 
