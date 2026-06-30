@@ -93,6 +93,16 @@ trajectoriz-cli search "theraven\|raven\|password"
 # Full-content search (default) or fast metadata-only search
 trajectoriz-cli search foo --fast
 
+# Search backends: grep (default), recoll, sqlite
+trajectoriz-cli search foo --backend grep     # in-process substring scan (default)
+trajectoriz-cli search foo --backend recoll   # Xapian index via recoll CLI
+trajectoriz-cli search foo --backend sqlite   # local SQLite FTS5 index
+
+# Build / update the recoll and SQLite indexes
+trajectoriz-cli refresh                       # both
+trajectoriz-cli refresh --no-sqlite           # recoll only
+trajectoriz-cli refresh --no-recoll           # SQLite only
+
 # Show a trajectory
 trajectoriz-cli show cl-1234abcd
 
