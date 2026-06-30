@@ -221,16 +221,21 @@ class RecollBackend(SearchBackend):
         # JSONL-based records: Xapian lookup → step-level grep on top-N candidates.
         query = " OR ".join(terms) if len(terms) > 1 else (terms[0] if terms else "")
         candidates = _recoll_candidate_paths(query, self._confdir, self._max_candidates)
+        indexed_paths: set[Path] = set(candidates)
         matches: list[SearchMatch] = []
         for path in candidates:
             if path.exists():
                 matches.extend(_search_file(path, terms))
 
-        # DB-backed records (opencode, hermes, codex_db, copilot_db) have no JSONL
-        # files and cannot be indexed by recoll — grep them in-process so both
-        # backends cover the same corpus.
+        # DB-backed records (opencode, hermes, copilot_db) have no JSONL files and
+        # cannot be indexed by recoll — grep them in-process so both backends cover
+        # the same corpus.  codex_db sessions whose rollout_path is already a recoll
+        # candidate are skipped here as a safety net against duplicates.
         for rec in records:
             if not isinstance(rec.source, dict):
+                continue
+            rollout = rec.source.get("rollout_path")
+            if rollout and Path(rollout) in indexed_paths:
                 continue
             traj = tz.parse_record(rec)
             if traj is None:

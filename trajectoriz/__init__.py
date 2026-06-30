@@ -539,10 +539,12 @@ def iter_local_records(cwd: str):
         ts, msg = get_first_user_message_claude(p)
         yield TrajectoryRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
 
+    codex_rollout_paths: set[Path] = set()
     for p in iter_codex_rollout_files():
         if _cwd_matches(get_cwd_from_trajectory(p), cwd):
             ts, msg = _codex_first_user_message(p)
             yield TrajectoryRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
+        codex_rollout_paths.add(p)
 
     for p in iter_copilot_event_trajectories():
         if _cwd_matches(get_cwd_from_trajectory(p), cwd):
@@ -565,6 +567,8 @@ def iter_local_records(cwd: str):
             )
 
     for sess in iter_codex_db_sessions():
+        if sess.rollout_path and Path(sess.rollout_path) in codex_rollout_paths:
+            continue
         if _cwd_matches(sess.cwd, cwd):
             yield TrajectoryRecord(
                 _short_id("cd", str(sess.id)),
@@ -603,9 +607,11 @@ def iter_all_records():
         ts, msg = get_first_user_message_claude(p)
         yield TrajectoryRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
 
+    codex_rollout_paths: set[Path] = set()
     for p in iter_codex_rollout_files():
         ts, msg = _codex_first_user_message(p)
         yield TrajectoryRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
+        codex_rollout_paths.add(p)
 
     for p in iter_copilot_event_trajectories():
         ts, msg = get_first_user_message_copilot(p)
@@ -625,6 +631,8 @@ def iter_all_records():
         )
 
     for sess in iter_codex_db_sessions():
+        if sess.rollout_path and Path(sess.rollout_path) in codex_rollout_paths:
+            continue
         yield TrajectoryRecord(
             _short_id("cd", str(sess.id)),
             "codex_db",
