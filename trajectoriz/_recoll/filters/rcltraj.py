@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/usr/share/recoll/filters")
-import rclexecm
-from rclbasehandler import RclBaseHandler
+import rclexecm  # type: ignore[import-untyped]
+from rclbasehandler import RclBaseHandler  # type: ignore[import-untyped]
 
 import trajectoriz as tz
 from trajectoriz.cli import _trajectory_to_html, TrajRecord
@@ -53,6 +53,7 @@ def _traj_record_for(path: Path) -> TrajRecord | None:
         agent = fmt
         prefix = {"claude": "cl", "codex": "cx", "copilot": "cp", "agent_probe": "ap"}.get(fmt, "xx")
 
+    assert prefix is not None
     fn = _FIRST_MSG_FNS.get(agent)
     ts, msg = fn(path) if fn else ("", "")
     return TrajRecord(_short_id(prefix, str(path)), agent, ts, msg, path)
