@@ -13,6 +13,14 @@ from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
 import trajectoriz as tz
+from trajectoriz._search import (
+    GrepBackend,
+    _make_snippet,
+    _matches_any,
+    _parse_terms,
+    _step_search_blobs,
+    get_backend,
+)
 
 
 DEFAULT_SHOW_PAGE_SIZE = 20   # steps per page
@@ -40,50 +48,6 @@ def _cached_parse(cache_key: str, mtime: float, parse_fn, cache_dir=None) -> tz.
 
 def _parse_record(record: TrajRecord, cache_dir=None) -> Optional[tz.ParsedTrajectory]:
     return tz.parse_record(record, cache_dir)
-
-
-def _step_search_blobs(step: dict) -> list[str]:
-    """Return the searchable text fields of a step (message, reasoning, tool calls, results)."""
-    blobs: list[str] = []
-    if step.get("message"):
-        blobs.append(step["message"])
-    if step.get("reasoning_content"):
-        blobs.append(step["reasoning_content"])
-    for tc in step.get("tool_calls", []):
-        blobs.append(json.dumps(tc.get("arguments", {}), ensure_ascii=False))
-    for res in (step.get("observation") or {}).get("results", []):
-        blobs.append(res.get("content", ""))
-    return blobs
-
-
-def _parse_terms(query: str) -> list[str]:
-    r"""Split a grep-style OR query on \| into individual lowercase terms."""
-    return [t.lower() for t in query.split(r"\|") if t]
-
-
-def _matches_any(text: str, terms: list[str]) -> bool:
-    tl = text.lower()
-    return any(term in tl for term in terms)
-
-
-def _make_snippet(text: str, terms: list[str], context: int = 50) -> str:
-    """Return a short single-line excerpt around the first match of any term."""
-    tl = text.lower()
-    best_idx, best_len = -1, 0
-    for term in terms:
-        idx = tl.find(term)
-        if idx != -1 and (best_idx == -1 or idx < best_idx):
-            best_idx, best_len = idx, len(term)
-    if best_idx == -1:
-        return ""
-    start = max(0, best_idx - context)
-    end = min(len(text), best_idx + best_len + context)
-    snippet = text[start:end].replace("\n", " ").strip()
-    if start > 0:
-        snippet = "…" + snippet
-    if end < len(text):
-        snippet = snippet + "…"
-    return snippet
 
 
 def _record_source_dir(rec: TrajRecord) -> str:
@@ -639,7 +603,13 @@ def cmd_search(args) -> None:
     if args.fast:
         _cmd_search_fast(args, terms, source)
     else:
-        cmd_search_content(args, terms, source)
+        backend_name = getattr(args, "backend", "grep")
+        try:
+            backend = get_backend(backend_name)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        cmd_search_content(args, terms, source, backend)
 
 
 def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> None:
@@ -667,25 +637,15 @@ def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> No
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
-def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord]) -> None:
+def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord], backend=None) -> None:
     """Search the full content of each trajectory's steps for any of the given terms."""
-    records = sorted(source, key=lambda r: r.timestamp, reverse=True)
-
-    matches: list[tuple[TrajRecord, int, str]] = []
-    for rec in records:
-        # always check first message first (no parse needed)
-        if _matches_any(rec.first_msg or "", terms):
-            snippet = _make_snippet(rec.first_msg or "", terms)
-            matches.append((rec, 1, snippet))
-            continue
-        traj = _parse_record(rec)
-        if traj is None:
-            continue
-        for step in traj.steps:
-            for blob in _step_search_blobs(step):
-                if _matches_any(blob, terms):
-                    matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
-                    break
+    if backend is None:
+        backend = GrepBackend()
+    try:
+        matches = backend.search(source, terms)
+    except NotImplementedError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not matches:
         print(f"No trajectories found matching `{args.query}` in their content.")
@@ -1058,6 +1018,12 @@ def main() -> None:
     p_search.add_argument(
         "--content", "--grep", action="store_true",
         help="(Deprecated alias — content search is now the default. Use --fast to skip it.)",
+    )
+    p_search.add_argument(
+        "--backend",
+        choices=["grep", "recoll", "sqlite"],
+        default="grep",
+        help="Search backend: grep (default, in-process), recoll (recoll CLI), sqlite (FTS index).",
     )
     p_search.set_defaults(func=cmd_search)
 
