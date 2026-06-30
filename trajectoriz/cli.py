@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -961,6 +962,82 @@ def cmd_delete(args) -> None:
     print(f"Deleted {deleted} trajectory file(s)." + (f" Skipped {skipped}." if skipped else ""))
 
 
+# ── Refresh (recoll index) ────────────────────────────────────────────────────
+
+_RECOLL_CONFDIR = Path.home() / ".recoll-trajectories"
+_RECOLL_DATA_DIR = Path(__file__).parent / "_recoll"
+
+_RECOLL_CONF_TEMPLATE = """\
+topdirs = {topdirs}
+
+dbdir = {confdir}/xapiandb
+
+# Only index .jsonl trajectory files
+skippedNames = *.py *.json *.sh *.md .gitignore *.txt *.yaml *.yml *.toml *.cfg *.ini bin log account.json .git
+
+filtersdir = {confdir}/filters
+"""
+
+
+def _recoll_topdirs() -> list[str]:
+    """Return the list of directories that contain JSONL trajectories."""
+    candidates = [
+        Path.home() / ".claude" / "projects",
+        Path.home() / ".local" / "share" / "agent_probe",
+        Path.home() / ".codex" / "sessions",
+        Path.home() / ".copilot" / "session-state",
+    ]
+    dirs = [str(p) for p in candidates if p.is_dir()]
+    cfg = tz.load_config()
+    raw = cfg.get("folders", [])
+    extras: list[str] = [raw] if isinstance(raw, str) else [str(f) for f in raw] if isinstance(raw, list) else []
+    for f in extras:
+        p = Path(f).expanduser()
+        if p.is_dir() and str(p) not in dirs:
+            dirs.append(str(p))
+    return dirs
+
+
+def cmd_refresh(args) -> None:
+    """Install recoll config to ~/.recoll-trajectories/ and run recollindex."""
+    import shutil
+
+    confdir = _RECOLL_CONFDIR
+    confdir.mkdir(parents=True, exist_ok=True)
+    (confdir / "filters").mkdir(exist_ok=True)
+
+    topdirs_list = _recoll_topdirs()
+    if not topdirs_list:
+        print("Warning: no trajectory directories found — index will be empty.", file=sys.stderr)
+    topdirs_str = " ".join(topdirs_list)
+
+    conf_path = confdir / "recoll.conf"
+    conf_path.write_text(
+        _RECOLL_CONF_TEMPLATE.format(topdirs=topdirs_str, confdir=confdir),
+        encoding="utf-8",
+    )
+
+    for name in ("mimeconf", "mimemap"):
+        src = _RECOLL_DATA_DIR / name
+        shutil.copy2(src, confdir / name)
+
+    filter_src = _RECOLL_DATA_DIR / "filters" / "rcltraj.py"
+    filter_dst = confdir / "filters" / "rcltraj.py"
+    shutil.copy2(filter_src, filter_dst)
+    filter_dst.chmod(0o755)
+
+    if not args.config_only:
+        env = {**os.environ, "RECOLL_CONFDIR": str(confdir)}
+        print(f"Indexing: {topdirs_str or '(none)'}")
+        result = subprocess.run(["recollindex"], env=env)
+        if result.returncode != 0:
+            print("recollindex failed — is recoll installed?", file=sys.stderr)
+            sys.exit(result.returncode)
+        print("Done. Use `trajectoriz-cli search --backend recoll <query>` to search.")
+    else:
+        print(f"Config written to {confdir}/ (skipped indexing).")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
@@ -1131,6 +1208,17 @@ def main() -> None:
         help="Emit machine-readable JSON instead of a Markdown table.",
     )
     p_adv_tools.set_defaults(func=cmd_advanced_tools)
+
+    # refresh
+    p_refresh = sub.add_parser(
+        "refresh",
+        help="Install recoll config to ~/.recoll-trajectories/ and rebuild the index.",
+    )
+    p_refresh.add_argument(
+        "--config-only", action="store_true",
+        help="Write config files without running recollindex.",
+    )
+    p_refresh.set_defaults(func=cmd_refresh)
 
     if len(sys.argv) == 1:
         parser.print_help()

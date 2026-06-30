@@ -17,3 +17,6 @@ trajectoriz-cli = "trajectoriz.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["trajectoriz*"]
+
+[tool.setuptools.package-data]
+trajectoriz = ["_recoll/*", "_recoll/filters/*"]

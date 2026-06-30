@@ -1,0 +1,2 @@
+[index]
+application/x-trajectory = execm rcltraj.py
