@@ -1,6 +1,6 @@
 # trajectoriz
 
-Locate agent trajectory files on the local machine.
+Library to work with agent trajectory files. Support Claude, Codex, OpenCode and others
 
 ## Installation
 
@@ -8,74 +8,28 @@ Locate agent trajectory files on the local machine.
 pip install trajectoriz
 ```
 
+## Features
+
+- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes, agent_probe and more through a single `iter_records()` / `parse_record()` interface
+- **Full-content search** — three backends: in-process `grep` (default, no setup), `recoll` (Xapian index), `sqlite` (FTS5 index)
+- **CLI** — list, search, show, blame, stats, and advanced shell-program analysis
+- **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
+- **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
+
 ## Usage
 
 ```python
-from trajectoriz import (
-    iter_claude_trajectories,
-    iter_claude_project_trajectories,
-    iter_records,
-    iter_codex_trajectories,
-    iter_codex_rollout_files,
-    iter_codex_db_sessions,
-    parse_record,
-    iter_pi_trajectories,
-    iter_cursor_trajectories,
-    iter_copilot_event_trajectories,
-    iter_copilot_sessions,
-    iter_agent_probe_trajectories,
-    iter_opencode_sessions,
-)
+from trajectoriz import iter_records, parse_record
 
-# List all Claude Code trajectory files
-for path in iter_claude_trajectories():
-    print(path)
-
-# List Claude trajectories for a specific project
-for path in iter_claude_project_trajectories("/path/to/repo"):
-    print(path)
-
-# List Codex CLI session files
-for path in iter_codex_trajectories():
-    print(path)
-
-# Iterate records across all supported sources and parse them uniformly
+# Iterate sessions across all supported agents (Claude, Codex, Copilot, OpenCode, …)
 for record in iter_records():
+    print(record.agent, record.timestamp[:10], record.first_msg[:60])
+
+# Iterate sessions for the current project only
+for record in iter_records(cwd="/path/to/repo"):
     trajectory = parse_record(record)
     if trajectory is not None:
-        print(record.agent, len(trajectory.steps))
-
-# List Codex CLI rollout files
-for path in iter_codex_rollout_files():
-    print(path)
-
-# List Codex sessions from SQLite store (~/.codex/state_5.sqlite)
-for session_id, updated_at_ms, first_msg, provider, model, cwd in iter_codex_db_sessions():
-    print(session_id, first_msg)
-
-# List pi coding agent session files
-for path in iter_pi_trajectories():
-    print(path)
-
-# List Cursor trajectory files
-for path in iter_cursor_trajectories():
-    print(path)
-
-# List Copilot CLI session event JSONL files (~/.copilot/session-state/*/events.jsonl)
-for path in iter_copilot_event_trajectories():
-    print(path)
-
-# List Copilot CLI sessions from SQLite store
-for session_id, created_at in iter_copilot_sessions():
-    print(session_id, created_at)
-
-# List agent_probe session JSONL files (~/.local/share/agent_probe/*/*/*)
-for path in iter_agent_probe_trajectories():
-    print(path)
-
-# List opencode sessions from SQLite store (~/.local/share/opencode/opencode.db)
-for session_id, updated_at_ms, model_json, directory, first_prompt in iter_opencode_sessions():
-    print(session_id, first_prompt)
+        print(f"{record.agent}: {len(trajectory.steps)} steps, {trajectory.total_tokens} tokens")
 ```
 
 ## CLI
@@ -84,42 +38,35 @@ for session_id, updated_at_ms, model_json, directory, first_prompt in iter_openc
 # List trajectories in the current directory
 trajectoriz-cli list
 
-# Search all trajectories for a keyword
+# Search all trajectories for a keyword (in-process grep, default)
 trajectoriz-cli search raven
 
-# OR search (grep syntax) — matches any of the terms
+# OR search — matches any of the terms
 trajectoriz-cli search "theraven\|raven\|password"
 
-# Full-content search (default) or fast metadata-only search
+# Metadata-only search (no trajectory parsing, much faster)
 trajectoriz-cli search foo --fast
 
-# Search backends: grep (default), recoll, sqlite
+# Search backends
 trajectoriz-cli search foo --backend grep     # in-process substring scan (default)
 trajectoriz-cli search foo --backend recoll   # Xapian index via recoll CLI
 trajectoriz-cli search foo --backend sqlite   # local SQLite FTS5 index
 
 # Build / update the recoll and SQLite indexes
-trajectoriz-cli refresh                       # both
-trajectoriz-cli refresh --no-sqlite           # recoll only
-trajectoriz-cli refresh --no-recoll           # SQLite only
+trajectoriz-cli refresh           # both
+trajectoriz-cli refresh --no-sqlite   # recoll only
+trajectoriz-cli refresh --no-recoll   # SQLite only
 
-# Show a trajectory
+# Show a trajectory (markdown, paginated)
 trajectoriz-cli show cl-1234abcd
-
-# Show the last page of a long trajectory
 trajectoriz-cli show cl-1234abcd --last
+trajectoriz-cli show cl-1234abcd --html > out.html
 
-# Blame a file — show every agent edit in chronological order with line deltas
+# Blame a file — every agent edit in chronological order with line deltas
 trajectoriz-cli blame src/main.py
 
-# Aggregate shell-invoked programs for a repo as JSON
+# Aggregate shell-invoked programs across a repo
 trajectoriz-cli advanced tools --dir /path/to/repo --json
-
-# Sample output:
-# | Timestamp           | Agent       | Traj ID      | Op    | Delta       | First message         |
-# | 2026-05-31T11:31:07 | agent_probe | ap-f5515937  | write | +55 lines   | run checklist ...     |
-# | 2026-06-01T14:22:00 | claude      | cl-e20eee97  | edit  | +13/-9 lines| add tests and doc ... |
-
 ```
 
 ## License
