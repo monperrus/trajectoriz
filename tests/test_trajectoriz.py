@@ -442,6 +442,8 @@ def test_parse_claude_trajectory_total_tokens(tmp_path):
     assert traj.total_prompt_tokens == 10
     assert traj.total_completion_tokens == 5
     assert traj.total_tokens == 15
+    assert traj.event_types == ["user", "assistant"]
+    assert traj.terminal_event == "assistant"
 
 
 def test_parse_claude_trajectory_total_tokens_estimated_without_usage(tmp_path):
@@ -503,6 +505,8 @@ def test_parse_codex_trajectory_cwd(tmp_path):
     )
     traj = parse_codex_trajectory(f)
     assert traj.cwd == "/work/project"
+    assert traj.event_types == ["session_meta", "user_message"]
+    assert traj.terminal_event == "user_message"
 
 
 def test_parse_copilot_event_trajectory_cwd(tmp_path):
@@ -518,6 +522,8 @@ def test_parse_copilot_event_trajectory_cwd(tmp_path):
     )
     traj = parse_copilot_event_trajectory(f)
     assert traj.cwd == "/home/user/project"
+    assert traj.event_types == ["session.start", "user.message"]
+    assert traj.terminal_event == "user.message"
 
 
 def test_parse_agent_probe_trajectory_cwd(tmp_path):
@@ -533,6 +539,38 @@ def test_parse_agent_probe_trajectory_cwd(tmp_path):
     )
     traj = parse_agent_probe_trajectory(f)
     assert traj.cwd == "/srv/myapp"
+
+
+def test_parse_agent_probe_trajectory_outcome_events(tmp_path):
+    from trajectoriz import parse_agent_probe_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "session_start", "session_id": "s1"},
+                {"type": "user", "content": "do the thing"},
+                {"type": "error", "message": "retrying"},
+                {"type": "compaction"},
+                {"type": "fatal_error", "message": "failed"},
+                {"type": "token_limit"},
+                {"type": "usage", "prompt_tokens": 2, "completion_tokens": 3},
+            ]
+        )
+        + "\n"
+    )
+
+    traj = parse_agent_probe_trajectory(f)
+
+    assert traj.terminal_event == "token_limit"
+    assert traj.event_types == [
+        "session_start", "user", "error", "compaction", "fatal_error", "token_limit", "usage"
+    ]
+    assert traj.error_count == 1
+    assert traj.fatal_error_count == 1
+    assert traj.token_limit_count == 1
+    assert traj.compaction_count == 1
 
 
 def test_parse_copilot_event_trajectory_total_tokens(tmp_path):

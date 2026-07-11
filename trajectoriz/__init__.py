@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from typing import Iterable
 
 
 def iter_claude_trajectories(claude_dir=None):
@@ -445,6 +446,14 @@ class ParsedTrajectory:
     total_tokens: int = 0
     extra_agent: dict = field(default_factory=dict)
     cwd: str = ""
+    # Source-agnostic outcome summary. Event names retain the source format's
+    # native vocabulary; parsers without lifecycle events leave these empty.
+    terminal_event: str | None = None
+    event_types: list[str] = field(default_factory=list)
+    error_count: int = 0
+    fatal_error_count: int = 0
+    token_limit_count: int = 0
+    compaction_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -456,6 +465,39 @@ class TrajectoryRecord:
     timestamp: str
     first_msg: str
     source: object
+
+
+def _event_summary(event_names: Iterable[object]) -> dict:
+    """Return a source-independent summary of a sequence of native events."""
+    event_types: list[str] = []
+    terminal_event: str | None = None
+    error_count = fatal_error_count = token_limit_count = compaction_count = 0
+
+    for name in event_names:
+        if not isinstance(name, str) or not name:
+            continue
+        if name not in event_types:
+            event_types.append(name)
+        # Token accounting is an observation rather than a trajectory outcome.
+        if name not in ("usage", "token_count"):
+            terminal_event = name
+        if name == "error":
+            error_count += 1
+        elif name == "fatal_error":
+            fatal_error_count += 1
+        elif name == "token_limit":
+            token_limit_count += 1
+        elif name == "compaction":
+            compaction_count += 1
+
+    return {
+        "terminal_event": terminal_event,
+        "event_types": event_types,
+        "error_count": error_count,
+        "fatal_error_count": fatal_error_count,
+        "token_limit_count": token_limit_count,
+        "compaction_count": compaction_count,
+    }
 
 
 def _short_id(prefix: str, key: str) -> str:
@@ -996,6 +1038,7 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
         cwd=cwd,
+        **_event_summary(entry.get("type") for entry in entries),
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
@@ -1147,6 +1190,10 @@ def parse_codex_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> Pa
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
         cwd=cwd,
+        **_event_summary(
+            (entry.get("payload") or {}).get("type") or entry.get("type")
+            for entry in entries
+        ),
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
@@ -1273,6 +1320,7 @@ def parse_copilot_event_trajectory(jsonl_path: Path, fallback_timestamp: str = "
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
         cwd=cwd,
+        **_event_summary(entry.get("type") for entry in entries),
     )
     traj.total_tokens = estimate_trajectory_tokens(traj)
     return traj
@@ -1464,7 +1512,9 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
     Token totals come from the "usage" events logged after each completion
     call (the provider's reported prompt/completion token counts). If a
     trajectory has no such events, totals fall back to
-    :func:`estimate_trajectory_tokens`.
+    :func:`estimate_trajectory_tokens`. Lifecycle information is retained in
+    the outcome fields of the returned trajectory; ``usage`` events are
+    excluded from ``terminal_event`` because they are metrics, not an outcome.
     """
     entries: list[dict] = []
     with Path(jsonl_path).open(encoding="utf-8") as fh:
@@ -1484,7 +1534,6 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
     total_tool_calls = 0
     total_prompt = total_completion = total_cached = 0
     saw_usage = False
-
     pending: dict | None = None
 
     def _flush_pending() -> None:
@@ -1560,6 +1609,7 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        **_event_summary(entry.get("type") for entry in entries),
     )
     traj.total_tokens = (
         (total_prompt + total_completion) if saw_usage else estimate_trajectory_tokens(traj)
@@ -1835,6 +1885,7 @@ def parse_codex_exec_trajectory(stdout_text: str, prompt: str = "", fallback_ts:
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        **_event_summary(entry.get("type") for entry in entries),
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj
