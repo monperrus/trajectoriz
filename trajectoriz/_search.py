@@ -42,14 +42,27 @@ _PARSERS = {
 }
 
 
-def _parse_terms(query: str) -> list[str]:
-    r"""Split a grep-style OR query on \| into individual lowercase terms."""
-    return [t.lower() for t in query.split(r"\|") if t]
+def _parse_terms(query: str) -> list[list[str]]:
+    r"""Parse a query into OR clauses of AND terms.
+
+    Space-separated words within a clause → AND (all must appear in the text).
+    \|-separated clauses → OR (any clause suffices).
+
+    Examples:
+        "salary KTH overhead"  → [["salary", "kth", "overhead"]]
+        r"foo\|bar"            → [["foo"], ["bar"]]
+    """
+    return [
+        [w.lower() for w in clause.split() if w]
+        for clause in query.split(r"\|")
+        if clause.strip()
+    ]
 
 
-def _matches_any(text: str, terms: list[str]) -> bool:
+def _matches_any(text: str, clauses: list[list[str]]) -> bool:
+    """Return True if text satisfies any OR clause (all AND terms in that clause present)."""
     tl = text.lower()
-    return any(term in tl for term in terms)
+    return any(all(term in tl for term in clause) for clause in clauses)
 
 
 def _make_snippet(text: str, terms: list[str], context: int = 50) -> str:
@@ -96,9 +109,9 @@ class SearchBackend(abc.ABC):
     def search(
         self,
         records: Iterable[TrajRecord],
-        terms: list[str],
+        terms: list[list[str]],
     ) -> list[SearchMatch]:
-        """Return (record, step_id, snippet) for records matching any term."""
+        """Return (record, step_id, snippet) for records matching the query clauses."""
 
 
 class GrepBackend(SearchBackend):
@@ -107,22 +120,25 @@ class GrepBackend(SearchBackend):
     def search(
         self,
         records: Iterable[TrajRecord],
-        terms: list[str],
+        terms: list[list[str]],
     ) -> list[SearchMatch]:
         sorted_records = sorted(records, key=lambda r: r.timestamp, reverse=True)
+        flat = [t for clause in terms for t in clause]
         matches: list[SearchMatch] = []
         for rec in sorted_records:
             if _matches_any(rec.first_msg or "", terms):
-                matches.append((rec, 1, _make_snippet(rec.first_msg or "", terms)))
+                matches.append((rec, 1, _make_snippet(rec.first_msg or "", flat)))
                 continue
             traj = tz.parse_record(rec)
             if traj is None:
                 continue
             for step in traj.steps:
-                for blob in _step_search_blobs(step):
-                    if _matches_any(blob, terms):
-                        matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
-                        break
+                blobs = _step_search_blobs(step)
+                combined = " ".join(blobs)
+                if _matches_any(combined, terms):
+                    snippet_blob = next((b for b in blobs if any(t in b.lower() for t in flat)), combined)
+                    matches.append((rec, step["step_id"], _make_snippet(snippet_blob, flat)))
+                    break
         return matches
 
 
@@ -162,7 +178,7 @@ def _agent_for_path(path: Path) -> tuple[str, str] | None:
 
 
 
-def _search_file(path: Path, terms: list[str]) -> list[SearchMatch]:
+def _search_file(path: Path, terms: list[list[str]]) -> list[SearchMatch]:
     """Step-level search within a single JSONL trajectory file."""
     result = _agent_for_path(path)
     if result is None:
@@ -182,12 +198,15 @@ def _search_file(path: Path, terms: list[str]) -> list[SearchMatch]:
     _, first_msg = fn(path) if fn else ("", "")
     rec = TrajRecord(traj_id, agent, ts, first_msg, path)
 
+    flat = [t for clause in terms for t in clause]
     matches: list[SearchMatch] = []
     for step in traj.steps:
-        for blob in _step_search_blobs(step):
-            if _matches_any(blob, terms):
-                matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
-                break
+        blobs = _step_search_blobs(step)
+        combined = " ".join(blobs)
+        if _matches_any(combined, terms):
+            snippet_blob = next((b for b in blobs if any(t in b.lower() for t in flat)), combined)
+            matches.append((rec, step["step_id"], _make_snippet(snippet_blob, flat)))
+            break
     return matches
 
 
@@ -209,7 +228,7 @@ class RecollBackend(SearchBackend):
     def search(
         self,
         records: Iterable[TrajRecord],
-        terms: list[str],
+        terms: list[list[str]],
     ) -> list[SearchMatch]:
         xapiandb = self._confdir / "xapiandb"
         if not xapiandb.exists():
@@ -218,8 +237,12 @@ class RecollBackend(SearchBackend):
                 "Run `trajectoriz-cli refresh` to install the config and build the index."
             )
 
-        # JSONL-based records: Xapian lookup → step-level grep on top-N candidates.
-        query = " OR ".join(terms) if len(terms) > 1 else (terms[0] if terms else "")
+        # Build recoll query: AND within each clause, OR between clauses.
+        clause_queries = [
+            "(" + " AND ".join(clause) + ")" if len(clause) > 1 else clause[0]
+            for clause in terms
+        ]
+        query = " OR ".join(clause_queries) if clause_queries else ""
         candidates = _recoll_candidate_paths(query, self._confdir, self._max_candidates)
         indexed_paths: set[Path] = set(candidates)
         matches: list[SearchMatch] = []
@@ -231,6 +254,7 @@ class RecollBackend(SearchBackend):
         # cannot be indexed by recoll — grep them in-process so both backends cover
         # the same corpus.  codex_db sessions whose rollout_path is already a recoll
         # candidate are skipped here as a safety net against duplicates.
+        flat = [t for clause in terms for t in clause]
         for rec in records:
             if not isinstance(rec.source, dict):
                 continue
@@ -241,10 +265,12 @@ class RecollBackend(SearchBackend):
             if traj is None:
                 continue
             for step in traj.steps:
-                for blob in _step_search_blobs(step):
-                    if _matches_any(blob, terms):
-                        matches.append((rec, step["step_id"], _make_snippet(blob, terms)))
-                        break
+                blobs = _step_search_blobs(step)
+                combined = " ".join(blobs)
+                if _matches_any(combined, terms):
+                    snippet_blob = next((b for b in blobs if any(t in b.lower() for t in flat)), combined)
+                    matches.append((rec, step["step_id"], _make_snippet(snippet_blob, flat)))
+                    break
 
         return matches
 
@@ -262,7 +288,7 @@ class SqliteBackend(SearchBackend):
     def search(
         self,
         records: Iterable[TrajRecord],
-        terms: list[str],
+        terms: list[list[str]],
     ) -> list[SearchMatch]:
         from trajectoriz._fts import fts_db_path, search_fts
 

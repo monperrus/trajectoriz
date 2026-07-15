@@ -613,7 +613,7 @@ def cmd_search(args) -> None:
         cmd_search_content(args, terms, source, backend)
 
 
-def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> None:
+def _cmd_search_fast(args, terms: list[list[str]], source: Iterable[TrajRecord]) -> None:
     """Search only first message, agent name, and ID (no trajectory parsing)."""
     records = [
         rec
@@ -638,7 +638,7 @@ def _cmd_search_fast(args, terms: list[str], source: Iterable[TrajRecord]) -> No
                     footer="\nUse `trajectoriz-cli show <id>` to view a trajectory.")
 
 
-def cmd_search_content(args, terms: list[str], source: Iterable[TrajRecord], backend=None) -> None:
+def cmd_search_content(args, terms: list[list[str]], source: Iterable[TrajRecord], backend=None) -> None:
     """Search the full content of each trajectory's steps for any of the given terms."""
     if backend is None:
         backend = GrepBackend()

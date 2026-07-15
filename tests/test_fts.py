@@ -141,7 +141,7 @@ def test_search_fts_finds_deep_match(traj_dir, db_path):
     rec = tz.TrajectoryRecord("cl-deep", "claude", "2024-03-01T10:00:00Z", "investigate performance", f)
     build_index([rec], db_path=db_path)
 
-    matches = search_fts(["hotspot"], db_path=db_path)
+    matches = search_fts([["hotspot"]], db_path=db_path)
 
     assert len(matches) >= 1
     result_rec, step_id, snippet = matches[0]
@@ -156,7 +156,7 @@ def test_search_fts_no_match(traj_dir, db_path):
     rec = tz.TrajectoryRecord("cl-nm", "claude", "2024-03-01T10:00:00Z", "build the widget", f)
     build_index([rec], db_path=db_path)
 
-    matches = search_fts(["xyzzy_nonexistent"], db_path=db_path)
+    matches = search_fts([["xyzzy_nonexistent"]], db_path=db_path)
     assert matches == []
 
 
@@ -171,7 +171,7 @@ def test_search_fts_or_terms(traj_dir, db_path):
     ]
     build_index(recs, db_path=db_path)
 
-    matches = search_fts(["unique_alpha_word", "unique_beta_word"], db_path=db_path)
+    matches = search_fts([["unique_alpha_word"], ["unique_beta_word"]], db_path=db_path)
     ids = {r.id for r, _, _ in matches}
     assert "cl-s1" in ids
     assert "cl-s2" in ids
@@ -179,7 +179,7 @@ def test_search_fts_or_terms(traj_dir, db_path):
 
 def test_search_fts_missing_db(tmp_path):
     with pytest.raises(FileNotFoundError, match="FTS index not found"):
-        search_fts(["anything"], db_path=tmp_path / "nonexistent.db")
+        search_fts([["anything"]], db_path=tmp_path / "nonexistent.db")
 
 
 def test_search_fts_returns_step_id(traj_dir, db_path):
@@ -188,7 +188,7 @@ def test_search_fts_returns_step_id(traj_dir, db_path):
     rec = tz.TrajectoryRecord("cl-st", "claude", "2024-03-01T10:00:00Z", "run diagnostics", f)
     build_index([rec], db_path=db_path)
 
-    matches = search_fts(["diagnostic_marker"], db_path=db_path)
+    matches = search_fts([["diagnostic_marker"]], db_path=db_path)
     assert len(matches) >= 1
     _, step_id, _ = matches[0]
     assert isinstance(step_id, int)
@@ -201,7 +201,7 @@ def test_search_fts_reconstructs_path_source(traj_dir, db_path):
     rec = tz.TrajectoryRecord("cl-ps", "claude", "2024-03-01", "path source test", f)
     build_index([rec], db_path=db_path)
 
-    matches = search_fts(["path_source_token"], db_path=db_path)
+    matches = search_fts([["path_source_token"]], db_path=db_path)
     assert matches
     result_rec, _, _ = matches[0]
     assert isinstance(result_rec.source, Path)
@@ -218,7 +218,7 @@ def test_sqlite_backend_search(traj_dir, db_path):
     build_index([rec], db_path=db_path)
 
     backend = SqliteBackend(db_path=db_path)
-    matches = backend.search([], ["backend_unique_marker"])
+    matches = backend.search([], [["backend_unique_marker"]])
 
     assert len(matches) >= 1
     result_rec, step_id, snippet = matches[0]
@@ -229,4 +229,4 @@ def test_sqlite_backend_search(traj_dir, db_path):
 def test_sqlite_backend_missing_db_raises(tmp_path):
     backend = SqliteBackend(db_path=tmp_path / "no.db")
     with pytest.raises(NotImplementedError, match="FTS index not found"):
-        backend.search([], ["anything"])
+        backend.search([], [["anything"]])

@@ -144,10 +144,13 @@ def _fts_quote(term: str) -> str:
 
 
 def search_fts(
-    terms: list[str],
+    clauses: list[list[str]],
     db_path: Path | None = None,
 ) -> list[tuple[TrajRecord, int, str]]:
     """Search the FTS index. Returns (record, step_id, snippet) tuples.
+
+    Each inner list is an AND clause (all words must appear in the step).
+    Outer list is OR (any clause suffices).
 
     Note: FTS5 uses word tokenisation, so only whole-word matches are found
     (unlike the grep backend which does substring matching).
@@ -160,7 +163,14 @@ def search_fts(
             f"FTS index not found at {path}. Run `trajectoriz-cli refresh` first."
         )
 
-    fts_query = " OR ".join(_fts_quote(t) for t in terms)
+    # Build FTS5 query: AND within a clause, OR between clauses.
+    clause_parts = [
+        "(" + " AND ".join(_fts_quote(t) for t in clause) + ")" if len(clause) > 1
+        else _fts_quote(clause[0])
+        for clause in clauses
+    ]
+    fts_query = " OR ".join(clause_parts) if clause_parts else '""'
+    flat = [t for clause in clauses for t in clause]
 
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
@@ -189,6 +199,6 @@ def search_fts(
             row["first_msg"],
             source,
         )
-        snippet = _make_snippet(row["content"], terms)
+        snippet = _make_snippet(row["content"], flat)
         matches.append((rec, int(row["step_id"]), snippet))
     return matches

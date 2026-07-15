@@ -133,27 +133,40 @@ def test_make_snippet_or_picks_first():
 
 
 def test_parse_terms_single():
-    assert cli._parse_terms("foo") == ["foo"]
+    assert cli._parse_terms("foo") == [["foo"]]
 
 
 def test_parse_terms_or():
-    assert cli._parse_terms(r"foo\|bar\|baz") == ["foo", "bar", "baz"]
+    assert cli._parse_terms(r"foo\|bar\|baz") == [["foo"], ["bar"], ["baz"]]
 
 
 def test_parse_terms_lowercases():
-    assert cli._parse_terms(r"Foo\|BAR") == ["foo", "bar"]
+    assert cli._parse_terms(r"Foo\|BAR") == [["foo"], ["bar"]]
+
+
+def test_parse_terms_and_within_clause():
+    assert cli._parse_terms("salary KTH overhead") == [["salary", "kth", "overhead"]]
+
+
+def test_parse_terms_and_or_combined():
+    assert cli._parse_terms(r"foo bar\|baz") == [["foo", "bar"], ["baz"]]
 
 
 # ── _matches_any ─────────────────────────────────────────────────────────────
 
 
 def test_matches_any_single_hit():
-    assert cli._matches_any("hello world", ["world"])
+    assert cli._matches_any("hello world", [["world"]])
 
 
 def test_matches_any_or():
-    assert cli._matches_any("hello world", ["zzz", "world"])
-    assert not cli._matches_any("hello world", ["zzz", "xxx"])
+    assert cli._matches_any("hello world", [["zzz"], ["world"]])
+    assert not cli._matches_any("hello world", [["zzz"], ["xxx"]])
+
+
+def test_matches_any_and_all_present():
+    assert cli._matches_any("hello world foo", [["hello", "foo"]])
+    assert not cli._matches_any("hello world", [["hello", "foo"]])
 
 
 # ── _step_search_blobs ──────────────────────────────────────────────────────
@@ -235,7 +248,7 @@ def test_cmd_search_content_finds_deep_match(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
     args = argparse.Namespace(query="sonnet", page=1, page_size=50, last=False)
-    cli.cmd_search_content(args, ["sonnet"], [rec])
+    cli.cmd_search_content(args, [["sonnet"]], [rec])
 
     out = capsys.readouterr().out
     assert "cl-abc" in out
@@ -332,7 +345,7 @@ def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
     rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
 
     args = argparse.Namespace(query="zzz_not_present", page=1, page_size=50, last=False)
-    cli.cmd_search_content(args, ["zzz_not_present"], [rec])
+    cli.cmd_search_content(args, [["zzz_not_present"]], [rec])
 
     out = capsys.readouterr().out
     assert "No trajectories found" in out
