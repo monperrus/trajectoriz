@@ -487,7 +487,7 @@ def _event_summary(event_names: Iterable[object]) -> dict:
             fatal_error_count += 1
         elif name == "token_limit":
             token_limit_count += 1
-        elif name == "compaction":
+        elif name in ("compaction", "compact_boundary"):
             compaction_count += 1
 
     return {
@@ -1038,7 +1038,14 @@ def parse_claude_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> P
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
         cwd=cwd,
-        **_event_summary(entry.get("type") for entry in entries),
+        # Compaction is encoded as a system entry with subtype compact_boundary;
+        # surface the subtype so it is counted as a compaction event.
+        **_event_summary(
+            "compact_boundary"
+            if entry.get("type") == "system" and entry.get("subtype") == "compact_boundary"
+            else entry.get("type")
+            for entry in entries
+        ),
     )
     traj.total_tokens = (total_prompt + total_completion) or estimate_trajectory_tokens(traj)
     return traj

@@ -446,6 +446,31 @@ def test_parse_claude_trajectory_total_tokens(tmp_path):
     assert traj.terminal_event == "assistant"
 
 
+def test_parse_claude_trajectory_counts_compaction(tmp_path):
+    import json
+
+    from trajectoriz import parse_claude_trajectory
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "sessionId": "s1",
+                     "message": {"content": "hello"}}) + "\n"
+        + json.dumps({"type": "system", "subtype": "compact_boundary",
+                      "compactMetadata": {"trigger": "auto", "preTokens": 100}}) + "\n"
+        + json.dumps({"type": "user", "isCompactSummary": True,
+                      "message": {"content": "summary of earlier conversation"}}) + "\n"
+        + json.dumps({"type": "assistant", "message": {
+            "model": "claude-sonnet-4-6",
+            "content": [{"type": "text", "text": "continuing"}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }}) + "\n"
+    )
+    traj = parse_claude_trajectory(f)
+    assert traj.compaction_count == 1
+    assert "compact_boundary" in traj.event_types
+    assert traj.terminal_event == "assistant"
+
+
 def test_parse_claude_trajectory_total_tokens_estimated_without_usage(tmp_path):
     import json
 
