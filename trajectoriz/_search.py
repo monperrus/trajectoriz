@@ -278,7 +278,11 @@ class RecollBackend(SearchBackend):
 class SqliteBackend(SearchBackend):
     """FTS5 search via a local SQLite index at ~/.cache/trajectoriz/fts.db.
 
-    Run `trajectoriz-cli refresh` to build or update the index.
+    Builds the index automatically the first time it is used (no index yet).
+    That first build scans the whole corpus and can take a while; after that,
+    run `trajectoriz-cli refresh` periodically to pick up new trajectories —
+    an existing index is never rebuilt automatically, since an incremental
+    refresh over a stale index can itself take minutes.
     Note: uses word tokenisation — matches whole words, not substrings.
     """
 
@@ -290,15 +294,19 @@ class SqliteBackend(SearchBackend):
         records: Iterable[TrajRecord],
         terms: list[list[str]],
     ) -> list[SearchMatch]:
-        from trajectoriz._fts import fts_db_path, search_fts
+        import sys
+
+        from trajectoriz._fts import build_index, fts_db_path, search_fts, stale_summary
 
         path = self._db_path or fts_db_path()
         if not path.exists():
-            raise NotImplementedError(
-                f"FTS index not found at {path}.\n"
-                "Run `trajectoriz-cli refresh` to build it,\n"
-                "then re-run with --backend sqlite."
-            )
+            print(f"sqlite: no FTS index at {path} — building it now (first run)…", file=sys.stderr)
+            indexed, skipped = build_index(tz.iter_all_records(), db_path=path)
+            print(f"sqlite: {indexed} indexed, {skipped} skipped", file=sys.stderr)
+        else:
+            warning = stale_summary(db_path=path)
+            if warning:
+                print(warning, file=sys.stderr)
         try:
             return search_fts(terms, db_path=path)
         except FileNotFoundError as exc:

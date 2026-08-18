@@ -226,7 +226,17 @@ def test_sqlite_backend_search(traj_dir, db_path):
     assert "backend_unique_marker" in snippet.lower()
 
 
-def test_sqlite_backend_missing_db_raises(tmp_path):
-    backend = SqliteBackend(db_path=tmp_path / "no.db")
-    with pytest.raises(NotImplementedError, match="FTS index not found"):
-        backend.search([], [["anything"]])
+def test_sqlite_backend_missing_db_autobuilds(traj_dir, db_path, monkeypatch, capsys):
+    f = traj_dir / "auto.jsonl"
+    _write_claude_traj(f, "autobuild test", "autobuild_unique_marker in tool result")
+    rec = tz.TrajectoryRecord("cl-au", "claude", "2024-03-01", "autobuild test", f)
+    monkeypatch.setattr(tz, "iter_all_records", lambda: iter([rec]))
+
+    backend = SqliteBackend(db_path=db_path)
+    assert not db_path.exists()
+    matches = backend.search([], [["autobuild_unique_marker"]])
+
+    assert db_path.exists()
+    assert len(matches) >= 1
+    assert matches[0][0].id == "cl-au"
+    assert "building it now" in capsys.readouterr().err

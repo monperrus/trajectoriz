@@ -603,14 +603,33 @@ def cmd_search(args) -> None:
 
     if args.fast:
         _cmd_search_fast(args, terms, source)
-    else:
-        backend_name = getattr(args, "backend", "grep")
+        return
+
+    explicit_backend = getattr(args, "backend", None) is not None
+    backend_name = args.backend or "sqlite"
+    try:
+        backend = get_backend(backend_name)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if backend_name == "sqlite" and not explicit_backend:
+        # Default backend: if the index is missing/broken, fall back to grep
+        # (always correct, just slower) instead of erroring out. An explicit
+        # `--backend sqlite` still surfaces the error, since the user asked
+        # for that backend specifically.
         try:
-            backend = get_backend(backend_name)
-        except ValueError as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-        cmd_search_content(args, terms, source, backend)
+            matches = backend.search(source, terms)
+        except Exception as exc:
+            # Covers a missing/corrupt index (NotImplementedError) as well as
+            # transient failures like sqlite3.OperationalError("database is
+            # locked") while `refresh` is rebuilding it concurrently.
+            print(f"sqlite: {exc}\nsqlite: falling back to grep.", file=sys.stderr)
+            matches = GrepBackend().search(source, terms)
+        _render_search_matches(args, matches)
+        return
+
+    cmd_search_content(args, terms, source, backend)
 
 
 def _cmd_search_fast(args, terms: list[list[str]], source: Iterable[TrajRecord]) -> None:
@@ -647,7 +666,10 @@ def cmd_search_content(args, terms: list[list[str]], source: Iterable[TrajRecord
     except NotImplementedError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
+    _render_search_matches(args, matches)
 
+
+def _render_search_matches(args, matches) -> None:
     if not matches:
         print(f"No trajectories found matching `{args.query}` in their content.")
         return
@@ -1108,8 +1130,10 @@ def main() -> None:
     p_search.add_argument(
         "--backend",
         choices=["grep", "recoll", "sqlite"],
-        default="grep",
-        help="Search backend: grep (default, in-process), recoll (recoll CLI), sqlite (FTS index).",
+        default=None,
+        help="Search backend: sqlite (default, FTS index; builds itself on first "
+             "use, falls back to grep if the index is missing/broken), "
+             "grep (in-process, always fresh, slower), recoll (recoll CLI).",
     )
     p_search.set_defaults(func=cmd_search)
 

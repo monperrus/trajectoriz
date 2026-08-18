@@ -128,6 +128,62 @@ def build_index(
         conn.close()
 
 
+def _newest_source_mtime() -> float:
+    """Newest mtime across the file-backed trajectory stores (claude, codex,
+    copilot, agent_probe), via glob + stat only — no file content is read.
+    DB-backed stores (opencode, codex_db, hermes...) have no path to stat and
+    are not covered by this signal.
+    """
+    newest = 0.0
+    for it in (
+        tz.iter_claude_trajectories,
+        tz.iter_codex_rollout_files,
+        tz.iter_copilot_event_trajectories,
+        tz.iter_agent_probe_trajectories,
+    ):
+        for p in it():
+            try:
+                newest = max(newest, p.stat().st_mtime)
+            except OSError:
+                continue
+    return newest
+
+
+def stale_summary(db_path: Path | None = None) -> str | None:
+    """Return a stderr-ready warning if trajectory files newer than the FTS
+    index exist on disk, else None. Read-only — never touches the index.
+
+    Cheap by design (glob + stat, no content parsing) so it's safe to run on
+    every search. Best-effort: any failure to read the index (e.g. locked by
+    a concurrent `refresh`) is treated as "can't tell, assume fresh" rather
+    than raised.
+    """
+    path = db_path or fts_db_path()
+    if not path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(path))
+        try:
+            row = conn.execute("SELECT MAX(source_mtime) FROM records").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    indexed_newest = row[0] if row and row[0] is not None else 0.0
+
+    disk_newest = _newest_source_mtime()
+    if disk_newest <= indexed_newest:
+        return None
+
+    import datetime
+    newest_date = datetime.datetime.fromtimestamp(disk_newest).strftime("%Y-%m-%d")
+    return (
+        f"sqlite: index is stale — newer trajectories exist on disk (as of "
+        f"{newest_date}) that the index hasn't seen. "
+        "Run `trajectoriz-cli refresh` to update."
+    )
+
+
 def source_from_json(source_json: str) -> object:
     """Reconstruct a record source from its stored JSON representation."""
     if source_json.startswith("/"):
