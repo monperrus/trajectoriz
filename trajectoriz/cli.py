@@ -723,17 +723,24 @@ def cmd_show(args) -> None:
 
     header, steps = _trajectory_header_and_steps(record, full=args.full)
 
+    if args.page_size is not None:
+        page_size = args.page_size
+    elif args.full:
+        page_size = max(1, len(steps))
+    else:
+        page_size = DEFAULT_SHOW_PAGE_SIZE
+
     if args.last:
         page = -1
     elif args.step is not None:
         if args.step < 1 or args.step > len(steps):
             print(f"Error: step {args.step} out of range (1–{len(steps)}).", file=sys.stderr)
             sys.exit(1)
-        page = math.ceil(args.step / args.page_size)
+        page = math.ceil(args.step / page_size)
     else:
         page = args.page
 
-    _paginate_items(steps, page, args.page_size, header, "steps")
+    _paginate_items(steps, page, page_size, header, "steps")
 
 
 def _is_single_message_only(record: TrajRecord, message: str) -> bool:
@@ -1148,8 +1155,9 @@ def main() -> None:
         help="Page number (default: 1). Increment to scroll.",
     )
     p_show.add_argument(
-        "--page-size", type=int, default=DEFAULT_SHOW_PAGE_SIZE, metavar="N",
-        help=f"Messages (steps) per page (default: {DEFAULT_SHOW_PAGE_SIZE})",
+        "--page-size", type=int, default=None, metavar="N",
+        help=f"Messages (steps) per page (default: {DEFAULT_SHOW_PAGE_SIZE}; "
+        "with --full, default is unlimited — all steps on one page).",
     )
     p_show.add_argument("--last", action="store_true", help="Jump to the last page.")
     p_show.add_argument(
