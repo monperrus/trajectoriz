@@ -83,6 +83,29 @@ trajectoriz-cli stats --all
 trajectoriz-cli advanced tools --dir /path/to/repo
 ```
 
+## Memory filesystem
+
+**trajectoriz-cli memory** mounts a read-only FUSE filesystem where every local trajectory
+shows up as an [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) JSON
+file — so any tool that reads files (grep, an agent's own file tools, etc.) can browse past
+sessions directly, without going through this CLI.
+
+```bash
+pip install trajectoriz[fuse]   # requires libfuse (Linux) or macFUSE (macOS)
+
+mkdir -p ~/mnt/traj-memory
+trajectoriz-cli memory ~/mnt/traj-memory        # daemonizes by default
+trajectoriz-cli memory ~/mnt/traj-memory --foreground   # or run attached
+
+ls ~/mnt/traj-memory
+cat ~/mnt/traj-memory/2026-05-15_claude_cl-4d72f7b5.atif.json
+
+fusermount -u ~/mnt/traj-memory                 # unmount (umount on macOS)
+```
+
+Use `--dir PATH` to expose a different repo's trajectories instead of the current directory's.
+The listing is recomputed on every access, so new sessions appear without remounting.
+
 ## Features
 
 - **Full-content search** — three backends (grep / sqlite / recoll); space-separated words are AND, `\|` is OR; matches at step level across message, tool calls, and results
@@ -90,6 +113,7 @@ trajectoriz-cli advanced tools --dir /path/to/repo
 - **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
 - **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
+- **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
 
 ## Python API
 

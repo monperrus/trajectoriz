@@ -1076,6 +1076,39 @@ def cmd_refresh(args) -> None:
         print(f"Config written to {confdir}/ (skipped indexing).")
 
 
+# ── Memory filesystem (FUSE) ──────────────────────────────────────────────────
+
+
+def cmd_memory(args) -> None:
+    """Mount a read-only FUSE filesystem exposing local trajectories as ATIF files."""
+    try:
+        import fuse
+    except ImportError:
+        print(
+            "Error: 'memory' requires the fuse extra: pip install trajectoriz[fuse]\n"
+            "(also requires libfuse/macFUSE installed on your system).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    from trajectoriz._memoryfs import MemoryFS
+
+    repo_root = str(Path(args.dir).resolve()) if args.dir else os.getcwd()
+    mountpoint = Path(args.mountpoint)
+    if not mountpoint.is_dir():
+        print(f"Error: mountpoint {mountpoint} does not exist or is not a directory.", file=sys.stderr)
+        sys.exit(1)
+
+    if not args.foreground:
+        print(f"Mounting trajectory memory for {repo_root} at {mountpoint} (daemonized).")
+        print(f"Unmount with: fusermount -u {mountpoint}   (or umount {mountpoint} on macOS)")
+    try:
+        fuse.FUSE(MemoryFS(repo_root), str(mountpoint), foreground=args.foreground, ro=True)
+    except RuntimeError as exc:
+        print(f"Error: failed to mount FUSE filesystem: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
@@ -1249,6 +1282,19 @@ def main() -> None:
         help="Emit machine-readable JSON instead of a Markdown table.",
     )
     p_adv_tools.set_defaults(func=cmd_advanced_tools)
+
+    # memory
+    p_memory = sub.add_parser(
+        "memory",
+        help="Mount a read-only FUSE filesystem exposing trajectories as ATIF JSON files.",
+    )
+    p_memory.add_argument("mountpoint", help="Existing empty directory to mount onto.")
+    p_memory.add_argument("--dir", metavar="PATH", help="Repo whose trajectories to expose (default: current directory).")
+    p_memory.add_argument(
+        "--foreground", "-f", action="store_true",
+        help="Run in the foreground instead of daemonizing (default: daemonize).",
+    )
+    p_memory.set_defaults(func=cmd_memory)
 
     # refresh
     p_refresh = sub.add_parser(
