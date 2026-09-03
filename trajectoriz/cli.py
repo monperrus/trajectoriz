@@ -1095,8 +1095,10 @@ def cmd_memory(args) -> None:
 
     repo_root = str(Path(args.dir).resolve()) if args.dir else os.getcwd()
     mountpoint = Path(args.mountpoint)
-    if not mountpoint.is_dir():
-        print(f"Error: mountpoint {mountpoint} does not exist or is not a directory.", file=sys.stderr)
+    if not mountpoint.exists():
+        mountpoint.mkdir(parents=True)
+    elif not mountpoint.is_dir():
+        print(f"Error: mountpoint {mountpoint} is not a directory.", file=sys.stderr)
         sys.exit(1)
 
     if not args.foreground:
@@ -1288,7 +1290,10 @@ def main() -> None:
         "memory",
         help="Mount a read-only FUSE filesystem exposing trajectories as ATIF JSON files.",
     )
-    p_memory.add_argument("mountpoint", help="Existing empty directory to mount onto.")
+    p_memory.add_argument(
+        "mountpoint", nargs="?", default="memory", metavar="MOUNTPOINT",
+        help="Directory to mount onto, created if missing (default: ./memory).",
+    )
     p_memory.add_argument("--dir", metavar="PATH", help="Repo whose trajectories to expose (default: current directory).")
     p_memory.add_argument(
         "--foreground", "-f", action="store_true",

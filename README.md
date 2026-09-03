@@ -93,14 +93,14 @@ sessions directly, without going through this CLI.
 ```bash
 pip install trajectoriz[fuse]   # requires libfuse (Linux) or macFUSE (macOS)
 
-mkdir -p ~/mnt/traj-memory
-trajectoriz-cli memory ~/mnt/traj-memory        # daemonizes by default
-trajectoriz-cli memory ~/mnt/traj-memory --foreground   # or run attached
+trajectoriz-cli memory                          # mounts ./memory (created if missing), daemonizes
+trajectoriz-cli memory ~/mnt/traj-memory        # or mount elsewhere
+trajectoriz-cli memory --foreground             # or run attached
 
-ls ~/mnt/traj-memory
-cat ~/mnt/traj-memory/2026-05-15_claude_cl-4d72f7b5.atif.json
+ls memory
+cat memory/2026-05-15_claude_cl-4d72f7b5.atif.json
 
-fusermount -u ~/mnt/traj-memory                 # unmount (umount on macOS)
+fusermount -u memory                            # unmount (umount on macOS)
 ```
 
 Use `--dir PATH` to expose a different repo's trajectories instead of the current directory's.
