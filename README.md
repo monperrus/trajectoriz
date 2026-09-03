@@ -104,7 +104,8 @@ fusermount -u memory                            # unmount (umount on macOS)
 ```
 
 Use `--dir PATH` to expose a different repo's trajectories instead of the current directory's.
-The listing is recomputed on every access, so new sessions appear without remounting.
+The listing is recomputed on every access, so new sessions appear without remounting. If the
+mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
 
 ## Features
 

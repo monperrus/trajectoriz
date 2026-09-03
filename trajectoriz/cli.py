@@ -1079,6 +1079,40 @@ def cmd_refresh(args) -> None:
 # ── Memory filesystem (FUSE) ──────────────────────────────────────────────────
 
 
+def _ensure_gitignored(path: Path) -> None:
+    """Add path to its git repo's top-level .gitignore, unless already ignored."""
+    abs_path = path.resolve()
+    check = subprocess.run(
+        ["git", "check-ignore", "-q", str(abs_path)],
+        cwd=str(abs_path.parent), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if check.returncode != 1:
+        return  # 0 = already ignored, anything else = not a git repo / error
+
+    root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(abs_path.parent), capture_output=True, text=True,
+    )
+    if root.returncode != 0:
+        return
+    repo_root = Path(root.stdout.strip())
+    try:
+        rel = abs_path.relative_to(repo_root)
+    except ValueError:
+        return  # mountpoint lives outside this repo
+
+    gitignore = repo_root / ".gitignore"
+    entry = f"/{rel.as_posix()}/"
+    existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+    if entry in existing.splitlines():
+        return
+    with gitignore.open("a", encoding="utf-8") as f:
+        if existing and not existing.endswith("\n"):
+            f.write("\n")
+        f.write(entry + "\n")
+    print(f"Added {entry} to {gitignore}")
+
+
 def cmd_memory(args) -> None:
     """Mount a read-only FUSE filesystem exposing local trajectories as ATIF files."""
     try:
@@ -1100,6 +1134,8 @@ def cmd_memory(args) -> None:
     elif not mountpoint.is_dir():
         print(f"Error: mountpoint {mountpoint} is not a directory.", file=sys.stderr)
         sys.exit(1)
+
+    _ensure_gitignored(mountpoint)
 
     if not args.foreground:
         print(f"Mounting trajectory memory for {repo_root} at {mountpoint} (daemonized).")
