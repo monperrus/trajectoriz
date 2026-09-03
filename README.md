@@ -98,6 +98,9 @@ shows up as an [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-fo
 file — so any tool that reads files (grep, an agent's own file tools, etc.) can browse past
 sessions directly, without going through this CLI.
 
+The idea behind it:
+[Exposing Past Sessions as Memory for Coding Agents](https://www.monperrus.net/martin/memory-for-coding-agents).
+
 ```bash
 pip install trajectoriz[fuse]   # requires libfuse (Linux) or macFUSE (macOS)
 
