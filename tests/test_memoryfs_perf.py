@@ -46,6 +46,14 @@ def repo(tmp_path, monkeypatch):
     return repo_root, scans
 
 
+def _sessions(fs: MemoryFS) -> list[str]:
+    """The trajectory files of a mount, excluding . .. and README.md."""
+    return [
+        n for n in fs.readdir("/", None)
+        if n not in (".", "..") and n.endswith(".atif.json")
+    ]
+
+
 def _read_all(fs: MemoryFS, name: str, chunk: int = 64) -> bytes:
     """Read a file the way the kernel does: repeated fixed-size requests."""
     path = "/" + name
@@ -67,7 +75,7 @@ def test_browsing_the_whole_tree_scans_the_stores_once(repo):
     repo_root, scans = repo
     fs = MemoryFS(repo_root, listing_ttl=60.0)
 
-    names = [n for n in fs.readdir("/", None) if n not in (".", "..")]
+    names = _sessions(fs)
     assert len(names) == 2
     for name in names:
         fs.getattr("/" + name)
@@ -79,7 +87,7 @@ def test_browsing_the_whole_tree_scans_the_stores_once(repo):
 def test_reads_are_served_without_rescanning(repo):
     repo_root, scans = repo
     fs = MemoryFS(repo_root, listing_ttl=60.0)
-    name = [n for n in fs.readdir("/", None) if n not in (".", "..")][0]
+    name = _sessions(fs)[0]
     before = scans["n"]
 
     for _ in range(5):
@@ -91,7 +99,7 @@ def test_reads_are_served_without_rescanning(repo):
 def test_read_returns_the_whole_payload_across_chunks(repo):
     repo_root, _ = repo
     fs = MemoryFS(repo_root, listing_ttl=60.0)
-    name = [n for n in fs.readdir("/", None) if n not in (".", "..")][0]
+    name = _sessions(fs)[0]
 
     data = _read_all(fs, name, chunk=7)  # deliberately awkward chunk size
 
@@ -103,7 +111,7 @@ def test_read_returns_the_whole_payload_across_chunks(repo):
 def test_stale_listing_is_refreshed_so_new_sessions_appear(repo, tmp_path):
     repo_root, _ = repo
     fs = MemoryFS(repo_root, listing_ttl=0.0)  # always stale
-    assert len(fs.readdir("/", None)) == 4  # . .. + 2 files
+    assert len(_sessions(fs)) == 2
 
     project_dir = claude_project_dir(repo_root, claude_dir=tmp_path / ".claude")
     (project_dir / "three.jsonl").write_text(
@@ -114,13 +122,13 @@ def test_stale_listing_is_refreshed_so_new_sessions_appear(repo, tmp_path):
         }) + "\n"
     )
 
-    assert len(fs.readdir("/", None)) == 5
+    assert len(_sessions(fs)) == 3
 
 
 def test_content_cache_is_bounded(repo):
     repo_root, _ = repo
     fs = MemoryFS(repo_root, listing_ttl=60.0, cache_bytes=1)  # evict aggressively
-    names = [n for n in fs.readdir("/", None) if n not in (".", "..")]
+    names = _sessions(fs)
 
     for name in names:
         assert json.loads(_read_all(fs, name))["schema_version"] == "ATIF-v1.7"
@@ -131,7 +139,7 @@ def test_content_cache_is_bounded(repo):
 def test_open_for_writing_is_refused(repo):
     repo_root, _ = repo
     fs = MemoryFS(repo_root, listing_ttl=60.0)
-    name = [n for n in fs.readdir("/", None) if n not in (".", "..")][0]
+    name = _sessions(fs)[0]
 
     with pytest.raises(fuse.FuseOSError) as exc:
         fs.open("/" + name, os.O_WRONLY)
@@ -149,3 +157,28 @@ def test_missing_file_does_not_rescan_on_every_probe(repo):
             fs.getattr("/nope.atif.json")
 
     assert scans["n"] - before <= 1
+
+
+def test_readme_explains_the_directory(repo):
+    repo_root, _ = repo
+    fs = MemoryFS(repo_root, listing_ttl=60.0)
+
+    assert "README.md" in fs.readdir("/", None)
+    data = _read_all(fs, "README.md")
+    text = data.decode()
+
+    assert repo_root in text
+    assert "trajectoriz-cli search" in text, "should point at the fast way to locate a session"
+    assert "ATIF" in text
+    # st_size is a byte count, and the text is not pure ASCII
+    assert len(data) == fs.getattr("/README.md")["st_size"]
+
+
+def test_readme_is_served_without_scanning_the_stores(repo):
+    repo_root, scans = repo
+    fs = MemoryFS(repo_root, listing_ttl=60.0)
+
+    fs.getattr("/README.md")
+    _read_all(fs, "README.md")
+
+    assert scans["n"] == 0, "the README needs no store scan"

@@ -33,6 +33,42 @@ DEFAULT_LISTING_TTL = 2.0                       # seconds
 DEFAULT_CACHE_BYTES = 256 * 1024 * 1024         # rendered payloads held in memory
 _MISS_REFRESH_AGE = 1.0                         # rescan on ENOENT at most this often
 
+README_NAME = "README.md"
+
+_README_TEMPLATE = """\
+# Trajectory memory
+
+Every file in this directory is one past agent session for `{repo_root}`, in
+[ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) — one
+JSON envelope holding the agent and model, the ordered `steps` (messages, tool
+calls, observations) and `final_metrics`. The same shape whatever agent
+recorded it: Claude Code, Codex, Copilot CLI, opencode and friends.
+
+Files are named `<date>_<agent>_<id>.atif.json` and are generated when read,
+so this directory is a view, not a copy. It is read-only.
+
+## Finding a session
+
+Grepping works, but it parses every session it touches. To locate one, ask
+trajectoriz instead — it searches first messages, IDs and agents without
+parsing anything:
+
+    trajectoriz-cli search "the thing you remember" --local
+
+Then read the file whose name carries the ID it reports:
+
+    ls | grep <id>
+
+Add `--content` to that search to look inside every step (tool calls, their
+results, all messages) rather than only first messages.
+
+## Reading a session
+
+    jq -r '.steps[0].message' <file>              # the instruction that started it
+    jq '.final_metrics' <file>                    # steps, tool calls, tokens
+    jq -r '.steps[].tool_calls[]?.function_name' <file>   # what it actually ran
+"""
+
 
 def _slugify(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "-", text).strip("-") or "x"
@@ -75,6 +111,9 @@ class MemoryFS(fuse.Operations):
         self._content_bytes = 0
         self._handles: dict[int, bytes] = {}
         self._next_fh = 1
+        # A short explainer for whoever opens the directory — including an
+        # agent that found it and has no idea what these files are.
+        self._readme = _README_TEMPLATE.format(repo_root=repo_root).encode("utf-8")
 
     # ── Caches ───────────────────────────────────────────────────────────
 
@@ -157,8 +196,11 @@ class MemoryFS(fuse.Operations):
                 "st_uid": uid, "st_gid": gid,
                 "st_ctime": now, "st_mtime": now, "st_atime": now,
             }
-        name, rec = self._lookup(path)
-        data = self._content_for(name, rec)
+        if path == "/" + README_NAME:
+            data = self._readme
+        else:
+            name, rec = self._lookup(path)
+            data = self._content_for(name, rec)
         return {
             "st_mode": stat.S_IFREG | 0o444,
             "st_nlink": 1,
@@ -168,13 +210,16 @@ class MemoryFS(fuse.Operations):
         }
 
     def readdir(self, path, fh):
-        return [".", ".."] + sorted(self._records())
+        return [".", "..", README_NAME] + sorted(self._records())
 
     def open(self, path, flags):  # pyright: ignore[reportIncompatibleMethodOverride]
         if flags & (os.O_WRONLY | os.O_RDWR):
             raise fuse.FuseOSError(errno.EROFS)
-        name, rec = self._lookup(path)
-        data = self._content_for(name, rec)
+        if path == "/" + README_NAME:
+            data = self._readme
+        else:
+            name, rec = self._lookup(path)
+            data = self._content_for(name, rec)
         with self._lock:
             fh = self._next_fh
             self._next_fh += 1
@@ -185,8 +230,11 @@ class MemoryFS(fuse.Operations):
         with self._lock:
             data = self._handles.get(fh)
         if data is None:  # read without a handle of ours
-            name, rec = self._lookup(path)
-            data = self._content_for(name, rec)
+            if path == "/" + README_NAME:
+                data = self._readme
+            else:
+                name, rec = self._lookup(path)
+                data = self._content_for(name, rec)
         return data[offset : offset + size]
 
     def release(self, path, fh):

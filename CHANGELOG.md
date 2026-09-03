@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`search` now searches first messages, IDs and agents by default** instead of the
+  full content of every step; pass `--content` (or `--grep`) for the exhaustive
+  search. Locating a session no longer parses trajectories. `--fast` is still
+  accepted and is now a no-op.
+- The memory filesystem serves a `README.md` explaining the directory, the ATIF
+  payload shape and how to locate a session with `search` instead of grepping.
 - Store scans are much faster: the per-file probes (format, working directory,
   first user message) are memoized on disk and invalidated by mtime, and a
   project's scan no longer reads first messages for files it filters out.

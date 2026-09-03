@@ -34,11 +34,11 @@ def test_readdir_lists_one_file_per_trajectory(tmp_path, monkeypatch):
 
     fs = MemoryFS(repo_root)
     entries = fs.readdir("/", None)
-    assert entries[:2] == [".", ".."]
-    assert len(entries) == 3
-    assert entries[2].endswith(".atif.json")
-    assert "2024-01-01" in entries[2]
-    assert "claude" in entries[2]
+    assert entries[:3] == [".", "..", "README.md"]
+    assert len(entries) == 4
+    assert entries[3].endswith(".atif.json")
+    assert "2024-01-01" in entries[3]
+    assert "claude" in entries[3]
 
 
 def test_read_returns_valid_atif_json(tmp_path, monkeypatch):
@@ -46,7 +46,7 @@ def test_read_returns_valid_atif_json(tmp_path, monkeypatch):
     _write_claude_session(tmp_path, monkeypatch, repo_root, "sess-1", "hello world")
 
     fs = MemoryFS(repo_root)
-    name = [e for e in fs.readdir("/", None) if e not in (".", "..")][0]
+    name = [e for e in fs.readdir("/", None) if e.endswith(".atif.json")][0]
     path = "/" + name
 
     fh = fs.open(path, 0)

@@ -10,25 +10,31 @@ pip install trajectoriz
 
 ## Search
 
-**trajectoriz-cli search** lets you find past agent sessions by content — what was discussed, what commands were run, what files were edited.
+**trajectoriz-cli search** lets you find past agent sessions — by what started them, or with
+`--content`, by everything that was discussed, run and edited inside them.
+
+By default it searches first messages, IDs and agent names, which needs no trajectory parsing
+and answers the common question ("which session was that?") immediately. `--content` searches
+every step instead: slower, exhaustive.
 
 ```bash
-# AND semantics: all words must appear in a step
-trajectoriz-cli search "salary KTH overhead"
-trajectoriz-cli search "telegram send_message bot_token"
-trajectoriz-cli search "deploy dokku researchers webapp"
+# Locate a session (default: first messages and metadata)
+trajectoriz-cli search "refactor auth"
+
+# Search inside every step: tool calls, their results, all messages
+trajectoriz-cli search "salary KTH overhead" --content
+
+# AND semantics: all words must appear
+trajectoriz-cli search "telegram send_message bot_token" --content
 
 # OR semantics: use \| between alternatives
-trajectoriz-cli search "pytest\|unittest"
+trajectoriz-cli search "pytest\|unittest" --content
 
 # Restrict to the current project
 trajectoriz-cli search "fix login bug" --local
-
-# Fast metadata-only search (first message only, no parsing)
-trajectoriz-cli search "refactor auth" --fast
 ```
 
-Results are returned as a paginated Markdown table with trajectory ID, agent, date, step number, and a context snippet:
+With `--content`, results are a paginated Markdown table with trajectory ID, agent, date, step number, and a context snippet:
 
 ```
 ## Search: `salary KTH overhead` — 8 match(es)
@@ -47,15 +53,17 @@ trajectoriz-cli show cl-4d72f7b5 --step 73
 
 ### Search backends
 
+Backends apply to `--content` searches only.
+
 | Backend | Setup | Semantics |
 |---|---|---|
-| `grep` (default) | none | substring, in-process |
-| `sqlite` | `trajectoriz-cli refresh --no-recoll` | whole-word FTS5 |
+| `sqlite` (default) | builds itself; `trajectoriz-cli refresh --no-recoll` to rebuild | whole-word FTS5 |
+| `grep` | none | substring, in-process, always fresh |
 | `recoll` | `trajectoriz-cli refresh --no-sqlite` | full Xapian index |
 
 ```bash
-trajectoriz-cli search "openssl handshake" --backend sqlite
-trajectoriz-cli search "openssl handshake" --backend recoll
+trajectoriz-cli search "openssl handshake" --content --backend sqlite
+trajectoriz-cli search "openssl handshake" --content --backend recoll
 ```
 
 ## CLI
@@ -98,6 +106,7 @@ trajectoriz-cli memory ~/mnt/traj-memory        # or mount elsewhere
 trajectoriz-cli memory --foreground             # or run attached
 
 ls memory
+cat memory/README.md                            # what the directory is, in the directory
 cat memory/2026-05-15_claude_cl-4d72f7b5.atif.json
 
 trajectoriz-cli memory --unmount                # unmount (or: fusermount -u memory)
@@ -120,7 +129,7 @@ trajectoriz-cli memory --unmount ./memory       # lazily unmounts if it is wedge
 
 ## Features
 
-- **Full-content search** — three backends (grep / sqlite / recoll); space-separated words are AND, `\|` is OR; matches at step level across message, tool calls, and results
+- **Search** — metadata by default (no parsing), `--content` for full-content search across messages, tool calls and results with three backends (sqlite / grep / recoll); space-separated words are AND, `\|` is OR
 - **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
 - **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page

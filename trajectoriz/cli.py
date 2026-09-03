@@ -601,7 +601,10 @@ def cmd_search(args) -> None:
     else:
         source = _all_records()
 
-    if args.fast:
+    # Locating a session is the common case, and metadata-only search answers
+    # it without parsing anything — so it is the default. Searching the
+    # contents of every step is the opt-in (--content).
+    if not args.content:
         _cmd_search_fast(args, terms, source)
         return
 
@@ -644,7 +647,11 @@ def _cmd_search_fast(args, terms: list[list[str]], source: Iterable[TrajRecord])
     records.sort(key=lambda r: r.timestamp, reverse=True)
 
     if not records:
-        print(f"No trajectories found matching `{args.query}`.")
+        print(
+            f"No trajectories found matching `{args.query}` in their first message, "
+            "ID or agent.\nSearch the full content of every step with: "
+            f"trajectoriz-cli search {args.query!r} --content"
+        )
         return
     header = (
         f"## Search: `{args.query}` — {len(records)} result(s)\n\n"
@@ -1274,12 +1281,13 @@ def main() -> None:
     )
     p_search.add_argument("--dir", metavar="PATH", help="Restrict search to this directory.")
     p_search.add_argument(
-        "--fast", action="store_true",
-        help="Search only the first message and metadata (no trajectory parsing). Much faster but misses tool call content.",
+        "--content", "--grep", action="store_true",
+        help="Search the full content of every step (tool calls, results, messages) "
+             "instead of only first messages and metadata. Slower but exhaustive.",
     )
     p_search.add_argument(
-        "--content", "--grep", action="store_true",
-        help="(Deprecated alias — content search is now the default. Use --fast to skip it.)",
+        "--fast", action="store_true",
+        help=argparse.SUPPRESS,  # metadata-only search is now the default
     )
     p_search.add_argument(
         "--backend",

@@ -526,3 +526,73 @@ def test_main_stats_command(tmp_path, monkeypatch, capsys):
     data = json.loads(out)
     assert data["total_trajectories"] == 1
     assert data["agents"] == {"claude": 1}
+
+
+# ── cmd_search: metadata-first default ───────────────────────────────────────
+
+
+def _search_args(**over):
+    base = dict(
+        query="", page=1, page_size=50, last=False, dir=None, local=True,
+        content=False, fast=False, backend=None,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_search_defaults_to_metadata_and_does_not_parse(tmp_path, monkeypatch, capsys):
+    """The default path must answer from records alone — no trajectory parsing."""
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli, "_local_records", lambda _cwd: [rec])
+
+    def no_parsing(*_a, **_kw):
+        raise AssertionError("the default search must not parse trajectories")
+
+    monkeypatch.setattr(cli, "_parse_record", no_parsing)
+
+    cli.cmd_search(_search_args(query="fix the bug"))
+
+    out = capsys.readouterr().out
+    assert "cl-abc" in out
+    assert "First message" in out, "metadata search renders the first-message table"
+
+
+def test_search_default_misses_step_content_and_says_so(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli, "_local_records", lambda _cwd: [rec])
+
+    cli.cmd_search(_search_args(query="sonnet"))  # only inside a step
+
+    out = capsys.readouterr().out
+    assert "No trajectories found" in out
+    assert "--content" in out, "should point at the exhaustive search"
+
+
+def test_search_with_content_flag_searches_steps(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli, "_local_records", lambda _cwd: [rec])
+
+    cli.cmd_search(_search_args(query="sonnet", content=True, backend="grep"))
+
+    out = capsys.readouterr().out
+    assert "cl-abc" in out
+    assert "Snippet" in out, "content search renders the step/snippet table"
+
+
+def test_search_still_accepts_the_old_fast_flag(tmp_path, monkeypatch, capsys):
+    """--fast is now the default; the flag stays accepted for compatibility."""
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli, "_local_records", lambda _cwd: [rec])
+
+    cli.cmd_search(_search_args(query="fix the bug", fast=True))
+
+    assert "cl-abc" in capsys.readouterr().out
