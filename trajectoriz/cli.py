@@ -1113,8 +1113,74 @@ def _ensure_gitignored(path: Path) -> None:
     print(f"Added {entry} to {gitignore}")
 
 
+def _fuse_mountpoints(mountinfo: str = "/proc/self/mountinfo") -> set[str]:
+    """Return mountpoints currently served by FUSE, read from /proc.
+
+    Deliberately parses /proc instead of calling os.path.ismount(): when a
+    FUSE daemon has died without unmounting, every stat() of its mountpoint
+    blocks forever, and detecting that state must not be what hangs.
+    """
+    points: set[str] = set()
+    try:
+        with open(mountinfo, encoding="utf-8") as fh:
+            for line in fh:
+                fields = line.split()
+                if len(fields) < 5 or "-" not in fields:
+                    continue
+                fstype = fields[fields.index("-") + 1]
+                if fstype == "fuse" or fstype.startswith("fuse."):
+                    # mountinfo escapes spaces and friends as octal
+                    points.add(fields[4].encode().decode("unicode_escape"))
+    except OSError:
+        pass
+    return points
+
+
+def _unmount(mountpoint: str) -> int:
+    """Unmount a FUSE mountpoint, lazily if it is busy or unresponsive."""
+    for cmd in (
+        ["fusermount", "-u", mountpoint],
+        ["fusermount3", "-u", mountpoint],
+        ["fusermount", "-uz", mountpoint],
+        ["fusermount3", "-uz", mountpoint],
+        ["umount", "-l", mountpoint],
+    ):
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            print(f"Unmounted {mountpoint}")
+            return 0
+    print(
+        f"Error: could not unmount {mountpoint}.\n"
+        "If a daemon is wedged, kill it and retry, or run: "
+        f"fusermount -uz {mountpoint}",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_memory(args) -> None:
     """Mount a read-only FUSE filesystem exposing local trajectories as ATIF files."""
+    # os.path.abspath, unlike Path.resolve/exists, never touches the
+    # filesystem — safe to use on a mountpoint whose daemon may be wedged.
+    target = os.path.abspath(args.mountpoint)
+
+    if args.unmount:
+        if target not in _fuse_mountpoints():
+            print(f"{target} is not a FUSE mountpoint — nothing to unmount.")
+            return
+        sys.exit(_unmount(target))
+
+    if target in _fuse_mountpoints():
+        print(
+            f"Error: {target} is already a FUSE mountpoint.\n"
+            f"Unmount it first: trajectoriz-cli memory --unmount {args.mountpoint}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     try:
         import fuse  # pyright: ignore[reportMissingImports]  # optional 'fuse' extra
     except ImportError:
@@ -1128,7 +1194,7 @@ def cmd_memory(args) -> None:
     from trajectoriz._memoryfs import MemoryFS
 
     repo_root = str(Path(args.dir).resolve()) if args.dir else os.getcwd()
-    mountpoint = Path(args.mountpoint)
+    mountpoint = Path(target)
     if not mountpoint.exists():
         mountpoint.mkdir(parents=True)
     elif not mountpoint.is_dir():
@@ -1139,9 +1205,19 @@ def cmd_memory(args) -> None:
 
     if not args.foreground:
         print(f"Mounting trajectory memory for {repo_root} at {mountpoint} (daemonized).")
-        print(f"Unmount with: fusermount -u {mountpoint}   (or umount {mountpoint} on macOS)")
+        print(f"Unmount with: trajectoriz-cli memory --unmount {args.mountpoint}")
+        # libfuse daemonizes by forking and _exit()ing the parent, which never
+        # flushes Python's buffers — without this the hints above are lost.
+        sys.stdout.flush()
+    # auto_unmount matters more than it looks: without it a daemon that dies
+    # leaves the mountpoint attached but unserviced, and every stat() on it
+    # then hangs forever — which wedges anything walking the tree it sits in
+    # (git, pytest, ripgrep, the agent's own file tools).
     try:
-        fuse.FUSE(MemoryFS(repo_root), str(mountpoint), foreground=args.foreground, ro=True)
+        fuse.FUSE(
+            MemoryFS(repo_root), str(mountpoint),
+            foreground=args.foreground, ro=True, auto_unmount=True,
+        )
     except RuntimeError as exc:
         print(f"Error: failed to mount FUSE filesystem: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -1334,6 +1410,10 @@ def main() -> None:
     p_memory.add_argument(
         "--foreground", "-f", action="store_true",
         help="Run in the foreground instead of daemonizing (default: daemonize).",
+    )
+    p_memory.add_argument(
+        "--unmount", "-u", action="store_true",
+        help="Unmount the mountpoint instead of mounting it (lazily if it is wedged).",
     )
     p_memory.set_defaults(func=cmd_memory)
 

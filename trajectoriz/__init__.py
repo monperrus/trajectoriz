@@ -11,7 +11,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 
 def iter_claude_trajectories(claude_dir=None):
@@ -189,6 +189,51 @@ class CodexDbSession:
     first_user_message: str | None
 
 
+_OPENCODE_ONE_FIRST_PART_SQL = """
+SELECT p.data
+FROM message m
+JOIN part p ON m.id = p.message_id
+WHERE m.session_id = ? AND json_extract(m.data, '$.role') = 'user'
+ORDER BY m.time_created, p.time_created
+LIMIT 1
+"""
+
+
+def _first_part_text(data) -> str:
+    try:
+        return json.loads(data).get("text", "").strip()
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return ""
+
+
+def _opencode_first_prompts(conn, session_ids: list[str]) -> dict[str, str]:
+    """Return {session_id: first user prompt} for the given opencode sessions.
+
+    The lookup is one indexed query per session, which is why the results are
+    cached: a session's *first* prompt never changes once it exists, so only
+    sessions new since the last scan are queried. An empty result is not
+    cached — the session may simply not have its first message yet.
+    """
+    from ._scancache import get_static, put_static
+
+    prompts: dict[str, str] = {}
+    for session_id in session_ids:
+        cached = get_static(session_id, "opencode-first-prompt")
+        if cached:
+            prompts[session_id] = str(cached)
+            continue
+        try:
+            row = conn.execute(_OPENCODE_ONE_FIRST_PART_SQL, (session_id,)).fetchone()
+        except sqlite3.Error:
+            continue
+        if row:
+            text = _first_part_text(row[0])
+            prompts[session_id] = text
+            if text:
+                put_static(session_id, "opencode-first-prompt", text)
+    return prompts
+
+
 def iter_opencode_sessions(opencode_dir=None):
     """Yield OpencodeSession objects from the opencode SQLite store."""
     d = (
@@ -208,25 +253,9 @@ def iter_opencode_sessions(opencode_dir=None):
                 "tokens_cache_read, tokens_cache_write "
                 "FROM session ORDER BY time_updated DESC"
             ).fetchall()
+            first_prompts = _opencode_first_prompts(conn, [row[0] for row in rows])
             for row in rows:
-                session_id = row[0]
-                first_prompt = ""
-                try:
-                    part_row = conn.execute(
-                        """
-                        SELECT p.data
-                        FROM message m
-                        JOIN part p ON m.id = p.message_id
-                        WHERE m.session_id = ? AND json_extract(m.data, '$.role') = 'user'
-                        ORDER BY m.time_created, p.time_created
-                        LIMIT 1
-                        """,
-                        (session_id,),
-                    ).fetchone()
-                    if part_row:
-                        first_prompt = json.loads(part_row[0]).get("text", "").strip()
-                except Exception:
-                    pass
+                first_prompt = first_prompts.get(row[0], "")
                 yield OpencodeSession(
                     id=row[0],
                     time_created=row[1],
@@ -541,18 +570,85 @@ def _codex_first_user_message(path: Path) -> tuple[str, str]:
     return ts, ""
 
 
+# ── Cached per-file probes ────────────────────────────────────────────────────
+#
+# Scanning the stores means sniffing thousands of files for their format,
+# working directory and first user message. Those probes are pure functions of
+# the file's bytes, so they are memoized on disk (see _scancache) and only
+# re-run for files that changed since the last scan.
+
+_FIRST_MSG_PROBES = {
+    "claude": get_first_user_message_claude,
+    "codex": lambda p: _codex_first_user_message(p),
+    "copilot": get_first_user_message_copilot,
+    "agent_probe": get_first_user_message_agent_probe,
+}
+
+
+def _memo(path, kind: str, compute) -> Any:
+    from ._scancache import memo
+
+    return memo(path, kind, compute)
+
+
+def _preload_probes() -> None:
+    """Bulk-load the compact cached probes before a scan reads them per file."""
+    from ._scancache import preload
+
+    preload("fmt", "cwd")
+
+
+def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
+    """Return (timestamp, first_user_text) for path, cached across scans."""
+    probe = _FIRST_MSG_PROBES.get(fmt)
+    if probe is None:
+        return "", ""
+    ts, msg = _memo(path, f"first:{fmt}", lambda: list(probe(path)))
+    return ts, msg
+
+
+def _scan_cwd(path) -> str:
+    """Return the working directory recorded in path, cached across scans."""
+    return _memo(path, "cwd", lambda: get_cwd_from_trajectory(path))
+
+
+def _scan_fmt(path) -> str | None:
+    """Return the detected JSONL format of path, cached across scans."""
+    return _memo(path, "fmt", lambda: _detect_jsonl_format(path))
+
+
+def _norm_dir(path: str) -> str:
+    """Normalize a directory path for prefix comparison (no trailing separator)."""
+    normalized = os.path.normpath(path)
+    return normalized.rstrip(os.sep) or os.sep
+
+
 def _cwd_matches(cwd_field: str | None, target: str) -> bool:
-    """True if cwd_field is target or a subdirectory of target."""
-    if not cwd_field:
+    """True if cwd_field is target or a subdirectory of target.
+
+    Compares normalized strings rather than Path objects: this runs once per
+    candidate trajectory file (tens of thousands of times on a full scan), and
+    pathlib's comparison operators are orders of magnitude slower.
+    """
+    if not cwd_field or not isinstance(cwd_field, str):
         return False
     try:
-        return Path(cwd_field) == Path(target) or Path(cwd_field).is_relative_to(Path(target))
+        candidate = _norm_dir(cwd_field)
+        base = _norm_dir(target)
     except (ValueError, TypeError):
         return False
+    if candidate == base:
+        return True
+    return candidate.startswith(base + os.sep) if base != os.sep else candidate != os.sep
 
 
-def _iter_extra_folder_records():
-    """Yield TrajectoryRecord objects from directories listed in ~/.config/trajectoriz.yaml."""
+def _iter_extra_folder_records(cwd: str | None = None):
+    """Yield TrajectoryRecord objects from directories listed in ~/.config/trajectoriz.yaml.
+
+    When cwd is given, files recorded against another working directory are
+    skipped before their first user message is read: extra folders can hold
+    thousands of trajectories, of which a single project matches a handful.
+    """
     cfg = load_config()
     raw = cfg.get("folders", [])
     if isinstance(raw, str):
@@ -562,40 +658,34 @@ def _iter_extra_folder_records():
     else:
         folders = []
     for p, fmt in iter_extra_folder_trajectories(folders):
-        if fmt == "claude":
-            ts, msg = get_first_user_message_claude(p)
-        elif fmt == "codex":
-            ts, msg = _codex_first_user_message(p)
-        elif fmt == "copilot":
-            ts, msg = get_first_user_message_copilot(p)
-        elif fmt == "agent_probe":
-            ts, msg = get_first_user_message_agent_probe(p)
-        else:
-            ts, msg = "", ""
+        if cwd is not None and not _cwd_matches(_scan_cwd(p), cwd):
+            continue
+        ts, msg = _scan_first_msg(p, fmt)
         yield TrajectoryRecord(_short_id(fmt[:2], str(p)), fmt, ts, msg, p)
 
 
 def iter_local_records(cwd: str):
     """Yield trajectory records whose working directory is cwd or a subdirectory."""
+    _preload_probes()
     for p in iter_claude_project_trajectories(cwd):
-        ts, msg = get_first_user_message_claude(p)
+        ts, msg = _scan_first_msg(p, "claude")
         yield TrajectoryRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
 
     codex_rollout_paths: set[Path] = set()
     for p in iter_codex_rollout_files():
-        if _cwd_matches(get_cwd_from_trajectory(p), cwd):
-            ts, msg = _codex_first_user_message(p)
+        if _cwd_matches(_scan_cwd(p), cwd):
+            ts, msg = _scan_first_msg(p, "codex")
             yield TrajectoryRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
         codex_rollout_paths.add(p)
 
     for p in iter_copilot_event_trajectories():
-        if _cwd_matches(get_cwd_from_trajectory(p), cwd):
-            ts, msg = get_first_user_message_copilot(p)
+        if _cwd_matches(_scan_cwd(p), cwd):
+            ts, msg = _scan_first_msg(p, "copilot")
             yield TrajectoryRecord(_short_id("cp", str(p)), "copilot", ts, msg, p)
 
     for p in iter_agent_probe_trajectories():
-        if _cwd_matches(get_cwd_from_trajectory(p), cwd):
-            ts, msg = get_first_user_message_agent_probe(p)
+        if _cwd_matches(_scan_cwd(p), cwd):
+            ts, msg = _scan_first_msg(p, "agent_probe")
             yield TrajectoryRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
 
     for sess in iter_opencode_sessions():
@@ -636,31 +726,28 @@ def iter_local_records(cwd: str):
                 {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
             )
 
-    for rec in _iter_extra_folder_records():
-        if isinstance(rec.source, Path):
-            traj_cwd = get_cwd_from_trajectory(rec.source)
-            if _cwd_matches(traj_cwd, cwd):
-                yield rec
+    yield from _iter_extra_folder_records(cwd)
 
 
 def iter_all_records():
     """Yield trajectory records across all supported local stores."""
+    _preload_probes()
     for p in iter_claude_trajectories():
-        ts, msg = get_first_user_message_claude(p)
+        ts, msg = _scan_first_msg(p, "claude")
         yield TrajectoryRecord(_short_id("cl", str(p)), "claude", ts, msg, p)
 
     codex_rollout_paths: set[Path] = set()
     for p in iter_codex_rollout_files():
-        ts, msg = _codex_first_user_message(p)
+        ts, msg = _scan_first_msg(p, "codex")
         yield TrajectoryRecord(_short_id("cx", str(p)), "codex", ts, msg, p)
         codex_rollout_paths.add(p)
 
     for p in iter_copilot_event_trajectories():
-        ts, msg = get_first_user_message_copilot(p)
+        ts, msg = _scan_first_msg(p, "copilot")
         yield TrajectoryRecord(_short_id("cp", str(p)), "copilot", ts, msg, p)
 
     for p in iter_agent_probe_trajectories():
-        ts, msg = get_first_user_message_agent_probe(p)
+        ts, msg = _scan_first_msg(p, "agent_probe")
         yield TrajectoryRecord(_short_id("ap", str(p)), "agent_probe", ts, msg, p)
 
     for sess in iter_opencode_sessions():
@@ -1768,8 +1855,8 @@ def iter_extra_folder_trajectories(folders: list[str]):
         folder = Path(folder_str).expanduser()
         if not folder.is_dir():
             continue
-        for p in sorted(folder.rglob("*.jsonl")):
-            fmt = _detect_jsonl_format(p)
+        for p in sorted(folder.rglob("*.jsonl"), key=str):
+            fmt = _scan_fmt(p)
             if fmt:
                 yield p, fmt
 

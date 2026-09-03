@@ -1,10 +1,16 @@
 """Read-only FUSE filesystem exposing local trajectories as ATIF JSON files.
 
-Each file in the mounted directory is one trajectory, rendered on first
-access via :func:`trajectoriz.atif.parsed_record_to_atif`. Directory
-listings are recomputed on every ``readdir`` (a cheap glob, same cost the
-``list``/``search`` commands already pay), so newly recorded sessions show
-up without remounting.
+Each file in the mounted directory is one trajectory, rendered to ATIF on
+first access. The filesystem is built to survive a coding agent browsing it:
+
+* The directory listing comes from one scan of the trajectory stores, shared
+  by every operation and refreshed at most once per ``listing_ttl`` seconds,
+  so a new session still appears without remounting.
+* A file's ATIF payload is rendered once per ``open`` and served from an
+  open-file handle, so the kernel's many read requests for one file cost a
+  slice each instead of a re-render.
+* Rendered payloads are kept in a byte-bounded LRU cache, so re-reading the
+  same trajectory is free while a walk over thousands of them stays bounded.
 """
 from __future__ import annotations
 
@@ -13,13 +19,19 @@ import json
 import os
 import re
 import stat
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 import fuse  # pyright: ignore[reportMissingImports]  # optional 'fuse' extra
 
 import trajectoriz as tz
 from . import atif as atif_mod
+
+DEFAULT_LISTING_TTL = 2.0                       # seconds
+DEFAULT_CACHE_BYTES = 256 * 1024 * 1024         # rendered payloads held in memory
+_MISS_REFRESH_AGE = 1.0                         # rescan on ENOENT at most this often
 
 
 def _slugify(text: str) -> str:
@@ -45,35 +57,89 @@ class MemoryFS(fuse.Operations):
 
     use_ns = True
 
-    def __init__(self, repo_root: str):
+    def __init__(
+        self,
+        repo_root: str,
+        listing_ttl: float = DEFAULT_LISTING_TTL,
+        cache_bytes: int = DEFAULT_CACHE_BYTES,
+    ):
         self.repo_root = repo_root
+        self.listing_ttl = listing_ttl
+        self.cache_bytes = cache_bytes
         self._mount_time = time.time()
-        # filename -> (source_mtime, encoded ATIF bytes)
-        self._content_cache: dict[str, tuple[float, bytes]] = {}
+        self._lock = threading.Lock()       # guards the caches below
+        self._scan_lock = threading.Lock()  # lets one thread scan at a time
+        self._listing: dict[str, tz.TrajectoryRecord] | None = None
+        self._listing_at = 0.0
+        self._content: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
+        self._content_bytes = 0
+        self._handles: dict[int, bytes] = {}
+        self._next_fh = 1
 
-    def _records(self) -> dict[str, tz.TrajectoryRecord]:
-        by_name: dict[str, tz.TrajectoryRecord] = {}
-        for rec in tz.iter_local_records(self.repo_root):
-            by_name[_filename_for(rec)] = rec
-        return by_name
+    # ── Caches ───────────────────────────────────────────────────────────
 
-    def _content(self, name: str, rec: tz.TrajectoryRecord) -> bytes:
+    def _cached_listing(self, max_age: float) -> dict[str, tz.TrajectoryRecord] | None:
+        with self._lock:
+            if self._listing is None:
+                return None
+            if time.monotonic() - self._listing_at > max_age:
+                return None
+            return self._listing
+
+    def _records(self, max_age: float | None = None) -> dict[str, tz.TrajectoryRecord]:
+        """Return {filename: record}, scanning the stores only when stale."""
+        if max_age is None:
+            max_age = self.listing_ttl
+        listing = self._cached_listing(max_age)
+        if listing is not None:
+            return listing
+        with self._scan_lock:
+            # Another thread may have refreshed the listing while we queued.
+            listing = self._cached_listing(max_age)
+            if listing is not None:
+                return listing
+            scanned = {
+                _filename_for(rec): rec
+                for rec in tz.iter_local_records(self.repo_root)
+            }
+            with self._lock:
+                self._listing = scanned
+                self._listing_at = time.monotonic()
+            return scanned
+
+    def _content_for(self, name: str, rec: tz.TrajectoryRecord) -> bytes:
+        """Return the ATIF payload for a record, rendering it at most once."""
         mtime = _source_mtime(rec)
-        cached = self._content_cache.get(name)
-        if cached is not None and cached[0] == mtime:
-            return cached[1]
+        with self._lock:
+            hit = self._content.get(name)
+            if hit is not None and hit[0] == mtime:
+                self._content.move_to_end(name)
+                return hit[1]
+
         parsed = tz.parse_record(rec)
         envelope = atif_mod.parsed_record_to_atif(
             rec, parsed, run_id=rec.id, profile=rec.agent, repo_root=self.repo_root,
         )
         data = json.dumps(envelope, indent=2).encode("utf-8")
-        self._content_cache[name] = (mtime, data)
+
+        with self._lock:
+            stale = self._content.pop(name, None)
+            if stale is not None:
+                self._content_bytes -= len(stale[1])
+            self._content[name] = (mtime, data)
+            self._content_bytes += len(data)
+            while self._content_bytes > self.cache_bytes and len(self._content) > 1:
+                _, (_, evicted) = self._content.popitem(last=False)
+                self._content_bytes -= len(evicted)
         return data
 
     def _lookup(self, path: str) -> tuple[str, tz.TrajectoryRecord]:
         name = path.lstrip("/")
-        records = self._records()
-        rec = records.get(name)
+        rec = self._records().get(name)
+        if rec is None:
+            # Could be a session recorded since the last scan — but don't
+            # rescan for every probe of a name that simply does not exist.
+            rec = self._records(_MISS_REFRESH_AGE).get(name)
         if rec is None:
             raise fuse.FuseOSError(errno.ENOENT)
         return name, rec
@@ -92,7 +158,7 @@ class MemoryFS(fuse.Operations):
                 "st_ctime": now, "st_mtime": now, "st_atime": now,
             }
         name, rec = self._lookup(path)
-        data = self._content(name, rec)
+        data = self._content_for(name, rec)
         return {
             "st_mode": stat.S_IFREG | 0o444,
             "st_nlink": 1,
@@ -104,16 +170,29 @@ class MemoryFS(fuse.Operations):
     def readdir(self, path, fh):
         return [".", ".."] + sorted(self._records())
 
-    def open(self, path, flags):
+    def open(self, path, flags):  # pyright: ignore[reportIncompatibleMethodOverride]
         if flags & (os.O_WRONLY | os.O_RDWR):
             raise fuse.FuseOSError(errno.EROFS)
-        self._lookup(path)  # raises ENOENT if missing
-        return 0
+        name, rec = self._lookup(path)
+        data = self._content_for(name, rec)
+        with self._lock:
+            fh = self._next_fh
+            self._next_fh += 1
+            self._handles[fh] = data
+        return fh
 
     def read(self, path, size, offset, fh):  # pyright: ignore[reportIncompatibleMethodOverride]
-        name, rec = self._lookup(path)
-        data = self._content(name, rec)
+        with self._lock:
+            data = self._handles.get(fh)
+        if data is None:  # read without a handle of ours
+            name, rec = self._lookup(path)
+            data = self._content_for(name, rec)
         return data[offset : offset + size]
+
+    def release(self, path, fh):
+        with self._lock:
+            self._handles.pop(fh, None)
+        return 0
 
     def write(self, path, data, offset, fh):
         raise fuse.FuseOSError(errno.EROFS)

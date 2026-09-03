@@ -9,7 +9,7 @@ import pytest
 fuse = pytest.importorskip("fuse")
 
 from trajectoriz import claude_project_dir
-from trajectoriz._memoryfs import MemoryFS, _filename_for
+from trajectoriz._memoryfs import MemoryFS
 
 
 def _write_claude_session(tmp_path, monkeypatch, repo_root, session_name, first_msg):
@@ -49,9 +49,10 @@ def test_read_returns_valid_atif_json(tmp_path, monkeypatch):
     name = [e for e in fs.readdir("/", None) if e not in (".", "..")][0]
     path = "/" + name
 
-    assert fs.open(path, 0) == 0
+    fh = fs.open(path, 0)
     st = fs.getattr(path)
-    data = fs.read(path, st["st_size"], 0, 0)
+    data = fs.read(path, st["st_size"], 0, fh)
+    fs.release(path, fh)
     envelope = json.loads(data)
     assert envelope["schema_version"] == "ATIF-v1.7"
     assert envelope["steps"][0]["message"] == "hello world"

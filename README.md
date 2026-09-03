@@ -100,12 +100,23 @@ trajectoriz-cli memory --foreground             # or run attached
 ls memory
 cat memory/2026-05-15_claude_cl-4d72f7b5.atif.json
 
-fusermount -u memory                            # unmount (umount on macOS)
+trajectoriz-cli memory --unmount                # unmount (or: fusermount -u memory)
 ```
 
 Use `--dir PATH` to expose a different repo's trajectories instead of the current directory's.
-The listing is recomputed on every access, so new sessions appear without remounting. If the
-mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
+If the mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
+
+The mount is built for tools that walk and read files: one store scan serves the whole
+directory listing (refreshed every couple of seconds, so new sessions still show up), and each
+trajectory's ATIF payload is rendered once per open, then served from memory. Reading every
+file in a mount of 30 trajectories takes ~0.1s.
+
+If a mount ever stops responding — a killed daemon leaves the mountpoint attached but
+unserviced, which hangs anything that walks the tree it sits in — recover it with:
+
+```bash
+trajectoriz-cli memory --unmount ./memory       # lazily unmounts if it is wedged
+```
 
 ## Features
 
