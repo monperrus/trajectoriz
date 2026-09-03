@@ -89,6 +89,7 @@ trajectoriz-cli advanced tools --dir /path/to/repo
 - **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
 - **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
+- **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
 
 ## Python API
 

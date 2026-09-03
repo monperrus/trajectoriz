@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Public source-agnostic record parsing API via `TrajectoryRecord`, `iter_records()`,
   `iter_all_records()`, `iter_local_records()`, and `parse_record()`.
+- `trajectoriz.atif` module translating parsed trajectories (Claude Code, Codex,
+  Copilot, agentknit, or any `parse_record()` result) to ATIF v1.7.
 
 ## [0.1.0] - 2025-05-31
 
