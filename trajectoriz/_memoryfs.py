@@ -16,7 +16,7 @@ import stat
 import time
 from pathlib import Path
 
-import fuse
+import fuse  # pyright: ignore[reportMissingImports]  # optional 'fuse' extra
 
 import trajectoriz as tz
 from . import atif as atif_mod
@@ -110,7 +110,7 @@ class MemoryFS(fuse.Operations):
         self._lookup(path)  # raises ENOENT if missing
         return 0
 
-    def read(self, path, size, offset, fh):
+    def read(self, path, size, offset, fh):  # pyright: ignore[reportIncompatibleMethodOverride]
         name, rec = self._lookup(path)
         data = self._content(name, rec)
         return data[offset : offset + size]

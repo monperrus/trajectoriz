@@ -1116,7 +1116,7 @@ def _ensure_gitignored(path: Path) -> None:
 def cmd_memory(args) -> None:
     """Mount a read-only FUSE filesystem exposing local trajectories as ATIF files."""
     try:
-        import fuse
+        import fuse  # pyright: ignore[reportMissingImports]  # optional 'fuse' extra
     except ImportError:
         print(
             "Error: 'memory' requires the fuse extra: pip install trajectoriz[fuse]\n"
