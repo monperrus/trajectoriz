@@ -125,7 +125,7 @@ def iter_keyring_secrets() -> tuple[list[KeyringSecret], list[str], int]:
     Returns (secrets, locked collection labels, count of undecodable items).
     """
     try:
-        import secretstorage
+        import secretstorage  # pyright: ignore[reportMissingImports]  # optional 'keyring' extra
     except ImportError as exc:  # pragma: no cover - depends on the host
         raise RuntimeError(
             "reading the keyring needs the 'secretstorage' package "

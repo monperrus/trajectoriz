@@ -13,6 +13,7 @@ dependencies = []
 
 [project.optional-dependencies]
 fuse = ["fusepy>=3.0"]
+keyring = ["secretstorage>=3.3"]
 
 [project.scripts]
 trajectoriz-cli = "trajectoriz.cli:main"
