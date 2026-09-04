@@ -1311,9 +1311,27 @@ def cmd_secrets(args) -> None:
         f"keyring secrets appear in cleartext in {len(trajectories)} trajectory(ies)\n"
     )
 
+    # Which remote endpoints held a conversation containing a secret, and how
+    # many distinct secrets each one saw.
+    per_destination: dict[str, set[str]] = {}
+    for leak in result.leaks:
+        if leak.destination:
+            per_destination.setdefault(leak.destination, set()).add(leak.fingerprint)
+    if per_destination:
+        print("### Sent to\n")
+        print("| Model endpoint | Distinct secrets |")
+        print("|---|---|")
+        for destination, fps in sorted(per_destination.items(), key=lambda kv: -len(kv[1])):
+            print(f"| {destination} | {len(fps)} |")
+        print()
+
     if args.group_by == "trajectory":
         keyfn = lambda leak: (leak.agent, leak.trajectory_id)  # noqa: E731
-        heading = lambda leak: f"### `{leak.trajectory_id}` ({leak.agent}, {leak.timestamp[:10]})"  # noqa: E731
+        heading = lambda leak: (  # noqa: E731
+            f"### `{leak.trajectory_id}` ({leak.agent}, {leak.timestamp[:10]}"
+            + (f", sent to {leak.destination}" if leak.destination else "")
+            + ")"
+        )
         columns = ("Keyring secret", "Step", "Occurrences", "Context")
         row = lambda leak: (  # noqa: E731
             _secret_title(leak),
@@ -1324,13 +1342,13 @@ def cmd_secrets(args) -> None:
     else:
         keyfn = lambda leak: (leak.labels, leak.fingerprint)  # noqa: E731
         heading = lambda leak: f"### {_secret_title(leak)}"  # noqa: E731
-        columns = ("Agent", "Trajectory", "Date", "Step", "Occurrences", "Context")
+        columns = ("Agent", "Trajectory", "Date", "Step", "Sent to", "Context")
         row = lambda leak: (  # noqa: E731
             leak.agent,
             f"`{leak.trajectory_id}`",
             leak.timestamp[:10],
             str(leak.step) if leak.step is not None else "—",
-            str(leak.occurrences),
+            leak.destination or "—",
             leak.context,
         )
 

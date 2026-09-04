@@ -133,6 +133,33 @@ def test_iter_agent_probe_trajectories_with_files(tmp_path):
     assert len(results) == 1
 
 
+def test_iter_agent_probe_trajectories_finds_every_nesting_depth(tmp_path):
+    """Sessions land at three different depths depending on how they started."""
+    from trajectoriz import iter_agent_probe_trajectories
+
+    (tmp_path / "root_journal.jsonl").write_text("{}")
+    model = tmp_path / "glm-5.3"
+    model.mkdir()
+    (model / "abcd_journal.jsonl").write_text("{}")
+    run = model / "run-1"
+    run.mkdir()
+    (run / "deep_journal.jsonl").write_text("{}")
+
+    names = {p.name for p in iter_agent_probe_trajectories(agent_probe_dir=str(tmp_path))}
+    assert names == {"root_journal.jsonl", "abcd_journal.jsonl", "deep_journal.jsonl"}
+
+
+def test_agent_probe_sidecar(tmp_path):
+    from trajectoriz import agent_probe_sidecar
+
+    journal = tmp_path / "abcd_journal.jsonl"
+    journal.write_text("{}")
+    assert agent_probe_sidecar(journal) is None
+    sidecar = tmp_path / "abcd_messages.json"
+    sidecar.write_text("{}")
+    assert agent_probe_sidecar(journal) == sidecar
+
+
 def test_iter_codex_db_sessions_empty(tmp_path):
     from trajectoriz import iter_codex_db_sessions
 
@@ -564,6 +591,116 @@ def test_parse_agent_probe_trajectory_cwd(tmp_path):
     )
     traj = parse_agent_probe_trajectory(f)
     assert traj.cwd == "/srv/myapp"
+
+
+def _agentknit_journal(path, secret: str = "s3cr3t-value") -> None:
+    """Write an agentknit (second generation) journal: wire messages, no usage."""
+    call = "call_1"
+    events = [
+        {"type": "turn_start", "ts": "2026-09-04T13:18:19", "task": "read the keyring"},
+        {"type": "message", "ts": "2026-09-04T13:18:19",
+         "msg": {"role": "user", "content": "read the keyring"}},
+        {"type": "message", "ts": "2026-09-04T13:18:25", "msg": {
+            "role": "assistant", "content": "", "tool_calls": [
+                {"id": call, "type": "function", "function": {
+                    "name": "exec_shell",
+                    "arguments": json.dumps({"command": "secret-tool lookup service login2"}),
+                }},
+            ],
+        }},
+        {"type": "tool_start", "ts": "2026-09-04T13:18:25", "call_id": call,
+         "name": "exec_shell", "args": {"command": "secret-tool lookup service login2"}},
+        {"type": "tool_end", "ts": "2026-09-04T13:18:26", "call_id": call,
+         "result": f"secret = {secret}"},
+        {"type": "message", "ts": "2026-09-04T13:18:26",
+         "msg": {"role": "tool", "tool_call_id": call, "content": f"secret = {secret}"}},
+        {"type": "message", "ts": "2026-09-04T13:18:30",
+         "msg": {"role": "assistant", "content": "Got the key."}},
+        {"type": "turn_end", "ts": "2026-09-04T13:18:31"},
+    ]
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+
+
+def test_parse_agentknit_journal(tmp_path):
+    """The second-generation journal must yield steps, not an empty trajectory."""
+    from trajectoriz import parse_agent_probe_trajectory
+
+    f = tmp_path / "abcd_journal.jsonl"
+    _agentknit_journal(f)
+    traj = parse_agent_probe_trajectory(f)
+
+    assert [s["source"] for s in traj.steps] == ["user", "agent", "agent"]
+    assert traj.steps[0]["message"] == "read the keyring"
+    assert traj.total_tool_calls == 1
+    # Wire arguments arrive JSON-encoded; they must be usable as a dict.
+    assert traj.steps[1]["tool_calls"][0]["arguments"]["command"].startswith("secret-tool")
+    assert "s3cr3t-value" in traj.steps[1]["observation"]["results"][0]["content"]
+    assert traj.steps[2]["message"] == "Got the key."
+
+
+def test_parse_agentknit_journal_names_the_endpoint(tmp_path):
+    from trajectoriz import parse_agent_probe_trajectory
+
+    model_dir = tmp_path / "glm-5.3"
+    model_dir.mkdir()
+    f = model_dir / "abcd_journal.jsonl"
+    _agentknit_journal(f)
+    (model_dir / "abcd_messages.json").write_text(json.dumps({
+        "metadata": {"endpoint": "https://api.z.ai/api/coding/paas/v4",
+                     "model": "glm-5.3", "session_id": "abcd"},
+        "messages": [{"role": "user", "content": "read the keyring"}],
+    }))
+
+    traj = parse_agent_probe_trajectory(f)
+    assert traj.model_name == "glm-5.3"
+    assert traj.session_id == "abcd"
+    assert traj.extra_agent["endpoint"] == "https://api.z.ai/api/coding/paas/v4"
+
+
+def test_parse_agentknit_journal_falls_back_to_the_model_directory(tmp_path):
+    from trajectoriz import parse_agent_probe_trajectory
+
+    model_dir = tmp_path / "glm-5.2"
+    model_dir.mkdir()
+    f = model_dir / "abcd_journal.jsonl"
+    _agentknit_journal(f)
+    assert parse_agent_probe_trajectory(f).model_name == "glm-5.2"
+
+
+def test_first_user_message_agentknit_journal(tmp_path):
+    from trajectoriz import get_first_user_message_agent_probe
+
+    f = tmp_path / "abcd_journal.jsonl"
+    _agentknit_journal(f)
+    ts, text = get_first_user_message_agent_probe(f)
+    assert text == "read the keyring"
+    assert ts == "2026-09-04T13:18:19"
+
+
+def test_parse_cache_is_invalidated_by_parser_revision(tmp_path, monkeypatch):
+    """A parser fix must not keep serving the older parse of an unchanged file."""
+    import trajectoriz
+
+    f = tmp_path / "abcd_journal.jsonl"
+    _agentknit_journal(f)
+    record = trajectoriz.TrajectoryRecord(
+        "ap-x", "agent_probe", "2026-09-04T13:18:19", "read the keyring", f
+    )
+    cache = tmp_path / "cache"
+    first = trajectoriz.parse_record(record, cache_dir=str(cache))
+    assert first is not None and first.steps
+
+    monkeypatch.setattr(trajectoriz, "PARSER_REVISION", trajectoriz.PARSER_REVISION + 1)
+    calls = []
+    real = trajectoriz.parse_agent_probe_trajectory
+
+    def counting(path, fallback_timestamp=""):
+        calls.append(path)
+        return real(path, fallback_timestamp)
+
+    monkeypatch.setattr(trajectoriz, "parse_agent_probe_trajectory", counting)
+    trajectoriz.parse_record(record, cache_dir=str(cache))
+    assert calls, "a new parser revision must re-parse rather than reuse the cache"
 
 
 def test_parse_agent_probe_trajectory_outcome_events(tmp_path):

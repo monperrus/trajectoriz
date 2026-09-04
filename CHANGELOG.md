@@ -18,9 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `--unmount` to recover a mountpoint whose daemon died.
 - `trajectoriz-cli secrets` reports OS keyring secrets that appear in cleartext in
   local trajectories: every keyring value is searched verbatim (no entropy or
-  pattern heuristics) across trajectory files and the SQLite session stores.
-  Findings are reported by keyring label plus SHA-256 fingerprint with redacted
-  context — the value itself is never printed — and the command exits 1 on any hit.
+  pattern heuristics) across trajectory files, the agentknit `*_messages.json`
+  request payloads and the SQLite session stores. Each finding names the model
+  endpoint the conversation was sent to, and is reported by keyring label plus
+  SHA-256 fingerprint with redacted context — the value itself is never printed.
+  The command exits 1 on any hit.
+- `agent_probe_sidecar()` locates the `*_messages.json` payload agentknit writes
+  beside a journal, and `parse_agent_probe_trajectory` reads the model, session id
+  and endpoint from it (`ParsedTrajectory.extra_agent["endpoint"]`).
 
 ### Changed
 
@@ -38,6 +43,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **agent_probe sessions were being missed**: the store was walked at a fixed
+  depth (`*/*/*.jsonl`), which skipped the 499 sessions filed one level up or in
+  the store root, including every agentknit run. The walk is now recursive.
+- agentknit's second-generation journal (`turn_start` / `message` / `tool_start` /
+  `tool_end`) is parsed instead of yielding an empty trajectory, so its steps,
+  tool calls, first user message and model are all available.
+- The on-disk parse cache is keyed by a parser revision. A trajectory file does
+  not change when a parser learns to read more of it, so stale entries used to
+  keep serving the older, poorer parse indefinitely.
 - The memory filesystem no longer rescans every trajectory store on each
   `getattr`, `open` and `read`: a listing is shared between operations and each
   file's ATIF payload is rendered once per open. Browsing a mount went from

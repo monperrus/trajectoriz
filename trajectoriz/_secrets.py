@@ -12,6 +12,7 @@ leaked secret into a scan report would just create the next leak.
 from __future__ import annotations
 
 import hashlib
+import re
 import sqlite3
 import subprocess
 from dataclasses import dataclass, field, replace
@@ -75,6 +76,7 @@ class Leak:
     timestamp: str
     step: int | None
     source: str
+    destination: str
     occurrences: int
     context: str
     partial: bool
@@ -187,13 +189,22 @@ def collect_targets(
     records: Iterable,
     store_dbs: Sequence[Path] | None = None,
 ) -> tuple[dict[Path, list], list[Path]]:
-    """Map each scannable file to the records it holds, plus the store DBs."""
+    """Map each scannable file to the records it holds, plus the store DBs.
+
+    A session can be more than its journal: agentknit writes the message array
+    it posted to the model endpoint in a sidecar file. That payload is the
+    strongest evidence a secret left the machine, so it is scanned alongside
+    the journal and attributed to the same session.
+    """
     by_path: dict[Path, list] = {}
     for record in records:
         path = _record_path(record)
         if path is None or not path.is_file():
             continue
         by_path.setdefault(path, []).append(record)
+        sidecar = tz.agent_probe_sidecar(path)
+        if sidecar is not None:
+            by_path.setdefault(sidecar, []).append(record)
     candidates = _STORE_DBS if store_dbs is None else store_dbs
     stores = [Path(db) for db in candidates if Path(db).is_file()]
     return by_path, stores
@@ -324,12 +335,36 @@ def redact(text: str, needle: str, width: int = 30) -> str:
     return f"{prefix}{snippet}{suffix}"
 
 
-def _steps_containing(record, needle: str) -> list[tuple[int, str]]:
-    """Return (step_id, blob) pairs whose text contains the needle."""
+def _parse(record):
+    """Parse a record, or return None when the format is unsupported."""
     try:
-        traj = tz.parse_record(record)
+        return tz.parse_record(record)
     except Exception:
-        return []
+        return None
+
+
+def destination_of(traj) -> str:
+    """Name the remote endpoint a trajectory's conversation was sent to.
+
+    A secret in a conversation is a secret handed to whoever served that
+    conversation, so the model and the host it was posted to are the finding
+    that matters most.
+    """
+    if traj is None:
+        return ""
+    model = traj.model_name or ""
+    endpoint = (traj.extra_agent or {}).get("endpoint") or ""
+    host = ""
+    if endpoint:
+        match = re.match(r"[a-z]+://([^/]+)", endpoint)
+        host = match.group(1) if match else endpoint
+    if model and host:
+        return f"{model} ({host})"
+    return model or host
+
+
+def _steps_containing(traj, needle: str) -> list[tuple[int, str]]:
+    """Return (step_id, blob) pairs whose text contains the needle."""
     if traj is None:
         return []
     found: list[tuple[int, str]] = []
@@ -359,8 +394,9 @@ def _leaks_for_file(
     """Locate a known-present secret inside one file, per trajectory step."""
     needle = secret.needle
     leaks: list[Leak] = []
-    for record in records:
-        for step_id, blob in _steps_containing(record, needle):
+    parsed = [(record, _parse(record)) for record in records]
+    for record, traj in parsed:
+        for step_id, blob in _steps_containing(traj, needle):
             leaks.append(
                 Leak(
                     fingerprint=secret.fingerprint,
@@ -372,6 +408,7 @@ def _leaks_for_file(
                     timestamp=record.timestamp,
                     step=step_id,
                     source=str(path),
+                    destination=destination_of(traj),
                     occurrences=blob.count(needle),
                     context=redact(blob, needle),
                     partial=needle != secret.value,
@@ -382,7 +419,7 @@ def _leaks_for_file(
 
     # Present in the file but not attributable to a parsed step (metadata
     # lines, an unparseable format, sidecar fields): still a leak.
-    record = records[0] if records else None
+    record, traj = parsed[0] if parsed else (None, None)
     return [
         Leak(
             fingerprint=secret.fingerprint,
@@ -394,6 +431,7 @@ def _leaks_for_file(
             timestamp=record.timestamp if record else "",
             step=None,
             source=str(path),
+            destination=destination_of(traj),
             occurrences=occurrences,
             context=_file_context(path, needle),
             partial=needle != secret.value,
@@ -456,6 +494,7 @@ def _leaks_for_store(
     path: Path,
     present: dict[str, tuple[KeyringSecret, tuple[str, ...]]],
     sessions: dict[str, tuple[str, str, str]],
+    models: dict[str, str],
 ) -> list[Leak]:
     """Identify secrets inside a session store DB, attributed by session id."""
     found: dict[tuple[str, str], Leak] = {}
@@ -484,6 +523,7 @@ def _leaks_for_store(
                 timestamp=timestamp,
                 step=None,
                 source=f"{path}:{table}",
+                destination=models.get(traj_id, ""),
                 occurrences=count,
                 context=redact(text, needle),
                 partial=needle != secret.value,
@@ -543,6 +583,11 @@ def scan(
         for r in records
         if isinstance(r.source, dict) and r.source.get("session_id") is not None
     }
+    db_models = {
+        r.id: str(r.source.get("model") or "")
+        for r in records
+        if isinstance(r.source, dict) and r.source.get("model")
+    }
 
     all_paths = sorted(by_path) + [db for db in stores if db not in by_path]
     result.files_scanned = len(all_paths)
@@ -586,7 +631,7 @@ def scan(
             result.unattributed += unattributed
 
     for path, present in stores_to_inspect.items():
-        result.leaks += _leaks_for_store(path, present, sessions)
+        result.leaks += _leaks_for_store(path, present, sessions, db_models)
 
     result.leaks.sort(key=lambda leak: (leak.labels, leak.timestamp, leak.trajectory_id))
     result.too_common.sort(key=lambda common: -common.files)
@@ -606,6 +651,9 @@ def leaks_to_json(result: ScanResult) -> dict:
             "bytes_scanned": result.bytes_scanned,
             "leaked_secrets": len({leak.fingerprint for leak in result.leaks}),
             "affected_trajectories": len({leak.trajectory_id for leak in result.leaks}),
+            "destinations": sorted(
+                {leak.destination for leak in result.leaks if leak.destination}
+            ),
             "too_common": len(result.too_common),
             "unattributed_to_a_step": result.unattributed,
         },
@@ -631,6 +679,7 @@ def leaks_to_json(result: ScanResult) -> dict:
                 "timestamp": leak.timestamp,
                 "step": leak.step,
                 "source": leak.source,
+                "destination": leak.destination,
                 "occurrences": leak.occurrences,
                 "context": leak.context,
                 "partial_match": leak.partial,

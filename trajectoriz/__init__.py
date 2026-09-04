@@ -2,6 +2,10 @@
 
 __version__ = "0.1.0"
 
+# Bump whenever a parser reads more of a trajectory than it used to: the
+# on-disk parse cache is keyed by it, so a stale entry can never mask a fix.
+PARSER_REVISION = 2
+
 import json
 import hashlib
 import math
@@ -84,14 +88,35 @@ def iter_copilot_event_trajectories(copilot_dir=None):
 
 
 def iter_agent_probe_trajectories(agent_probe_dir=None):
-    """Yield all agent_probe session JSONL paths (~/.local/share/agent_probe/*/*/*. jsonl)."""
+    """Yield all agent_probe session JSONL paths under ~/.local/share/agent_probe.
+
+    The store is nested inconsistently: a session lands in the root, in
+    ``<model>/`` or in ``<model>/<run>/`` depending on how it was launched, so
+    the walk is recursive rather than a fixed depth.
+    """
     d = (
         Path(agent_probe_dir)
         if agent_probe_dir
         else Path.home() / ".local" / "share" / "agent_probe"
     )
     if d.is_dir():
-        yield from sorted(d.glob("*/*/*.jsonl"))
+        yield from sorted(d.rglob("*.jsonl"))
+
+
+def agent_probe_sidecar(jsonl_path) -> Path | None:
+    """Return the ``*_messages.json`` payload file beside an agent_probe journal.
+
+    agentknit writes the exact message array it sends to the model endpoint
+    next to the journal. It is the request as transmitted, so it is the
+    evidence of what left the machine.
+    """
+    path = Path(jsonl_path)
+    name = path.name
+    if name.endswith("_journal.jsonl"):
+        sidecar = path.with_name(name[: -len("_journal.jsonl")] + "_messages.json")
+    else:
+        sidecar = path.with_name(path.stem + "_messages.json")
+    return sidecar if sidecar.is_file() else None
 
 
 @dataclass(frozen=True)
@@ -398,6 +423,15 @@ def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
                     if not timestamp:
                         timestamp = d.get("ts", "") or d.get("timestamp", "")
                     content = d.get("data", {}).get("content", "")
+                elif event_type == "turn_start":
+                    # agentknit journals open with the task, before any message.
+                    if not timestamp:
+                        timestamp = d.get("ts", "") or d.get("timestamp", "")
+                    content = d.get("task", "")
+                elif event_type == "message" and (d.get("msg") or {}).get("role") == "user":
+                    if not timestamp:
+                        timestamp = d.get("ts", "") or d.get("timestamp", "")
+                    content = (d.get("msg") or {}).get("content", "")
                 else:
                     continue
                 text = _extract_content_text(content)
@@ -814,8 +848,14 @@ def _cache_dir(cache_dir=None) -> Path:
 
 
 def _cached_parse(cache_key: str, mtime: float, parse_fn, cache_dir=None) -> ParsedTrajectory:
-    """Return parse_fn(), using an mtime-keyed pickle cache to avoid re-parsing."""
-    cpath = _cache_dir(cache_dir) / f"{hashlib.sha256(cache_key.encode()).hexdigest()}.pkl"
+    """Return parse_fn(), using an mtime-keyed pickle cache to avoid re-parsing.
+
+    The revision is part of the key: a trajectory file does not change when a
+    parser learns to read more of it, so without this a parser fix would keep
+    serving the older, poorer parse forever.
+    """
+    keyed = f"r{PARSER_REVISION}:{cache_key}"
+    cpath = _cache_dir(cache_dir) / f"{hashlib.sha256(keyed.encode()).hexdigest()}.pkl"
     if cpath.exists():
         try:
             with cpath.open("rb") as f:
@@ -1603,6 +1643,16 @@ def parse_hermes_trajectory(session_id: str, hermes_dir=None, fallback_timestamp
 def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "") -> ParsedTrajectory:
     """Parse an agent_probe session JSONL trajectory file.
 
+    Two journal generations are supported. The first logs ``session_start`` /
+    ``user`` / ``tool_call`` / ``tool_result`` / ``assistant`` / ``usage``. The
+    second (agentknit) logs ``turn_start`` / ``message`` / ``tool_start`` /
+    ``tool_end``, where each ``message`` entry is a wire message with an
+    OpenAI-shaped role, so those entries are what the parser follows and the
+    ``tool_*`` events are their local echo. The second generation records no
+    token usage and no model name in the journal: both the model and the
+    endpoint come from the ``*_messages.json`` payload written beside it, or
+    failing that from the directory the session was filed under.
+
     Token totals come from the "usage" events logged after each completion
     call (the provider's reported prompt/completion token counts). If a
     trajectory has no such events, totals fall back to
@@ -1629,6 +1679,8 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
     total_prompt = total_completion = total_cached = 0
     saw_usage = False
     pending: dict | None = None
+    turn_task: str | None = None
+    last_user_message: str | None = None
 
     def _flush_pending() -> None:
         nonlocal pending
@@ -1692,7 +1744,80 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
             total_completion += entry.get("completion_tokens") or 0
             total_cached += entry.get("cached_tokens") or 0
 
+        elif t == "turn_start":
+            # The task only becomes a step if the turn logs no user message of
+            # its own, since the two carry the same text when both are present.
+            task = (entry.get("task") or "").strip()
+            if task:
+                turn_task = task
+
+        elif t == "message":
+            msg = entry.get("msg") or {}
+            role = msg.get("role")
+            text = _extract_content_text(msg.get("content"))
+            if role == "user":
+                _flush_pending()
+                if text and text != last_user_message:
+                    step_id += 1
+                    steps.append({"step_id": step_id, "timestamp": ts,
+                                  "source": "user", "message": text})
+                    last_user_message = text
+                turn_task = None
+            elif role == "assistant":
+                _flush_pending()
+                if turn_task and turn_task != last_user_message:
+                    step_id += 1
+                    steps.append({"step_id": step_id, "timestamp": ts,
+                                  "source": "user", "message": turn_task})
+                    last_user_message = turn_task
+                turn_task = None
+                step_id += 1
+                pending = {"step_id": step_id, "timestamp": ts,
+                           "source": "agent", "message": text}
+                calls = msg.get("tool_calls") or []
+                if calls:
+                    pending["tool_calls"] = [
+                        {
+                            "tool_call_id": call.get("id") or "",
+                            "function_name": (call.get("function") or {}).get("name", ""),
+                            "arguments": _parse_tool_arguments(
+                                (call.get("function") or {}).get("arguments")
+                            ),
+                        }
+                        for call in calls
+                        if isinstance(call, dict)
+                    ]
+                    total_tool_calls += len(pending["tool_calls"])
+            elif role == "tool":
+                if pending is not None:
+                    obs = pending.setdefault("observation", {"results": []})
+                    obs["results"].append({
+                        "source_call_id": msg.get("tool_call_id") or "",
+                        "content": _truncate(text),
+                    })
+
     _flush_pending()
+
+    extra_agent: dict = {}
+    sidecar = agent_probe_sidecar(jsonl_path)
+    if sidecar is not None:
+        try:
+            metadata = (json.loads(sidecar.read_text(encoding="utf-8")) or {}).get("metadata") or {}
+        except (OSError, json.JSONDecodeError, AttributeError):
+            metadata = {}
+        model_name = model_name or metadata.get("model")
+        session_id = session_id or metadata.get("session_id")
+        # The endpoint the payload was posted to: the destination of anything
+        # the conversation contains.
+        if metadata.get("endpoint"):
+            extra_agent["endpoint"] = metadata["endpoint"]
+        if metadata.get("agentknit_commit"):
+            extra_agent["agentknit_commit"] = metadata["agentknit_commit"]
+    if not model_name:
+        # Sessions are filed under a directory named after the model.
+        parent = Path(jsonl_path).parent.name
+        if parent and parent != "agent_probe":
+            model_name = parent
 
     traj = ParsedTrajectory(
         session_id=session_id,
@@ -1703,6 +1828,7 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
         total_completion_tokens=total_completion,
         total_cached_tokens=total_cached,
         total_tool_calls=total_tool_calls,
+        extra_agent=extra_agent,
         **_event_summary(entry.get("type") for entry in entries),
     )
     traj.total_tokens = (
@@ -1817,6 +1943,19 @@ def load_config(config_path=None) -> dict:
         return {}
 
 
+def _parse_tool_arguments(arguments) -> dict:
+    """Return wire tool-call arguments as a dict; they arrive JSON-encoded."""
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str) and arguments.strip():
+        try:
+            parsed = json.loads(arguments)
+        except json.JSONDecodeError:
+            return {"raw": arguments}
+        return parsed if isinstance(parsed, dict) else {"raw": arguments}
+    return {}
+
+
 def _detect_jsonl_format(path: Path) -> str | None:
     """Sniff up to 30 lines of a JSONL file and return the detected format name."""
     scores: dict[str, int] = {"claude": 0, "codex": 0, "copilot": 0, "agent_probe": 0}
@@ -1841,6 +1980,10 @@ def _detect_jsonl_format(path: Path) -> str | None:
                     scores["copilot"] += 2
                 if t in ("session_start", "tool_call", "tool_result") or (
                     t == "assistant" and "content" in d and "ts" in d
+                ):
+                    scores["agent_probe"] += 2
+                if t in ("turn_start", "tool_start", "tool_end") or (
+                    t == "message" and "msg" in d
                 ):
                     scores["agent_probe"] += 2
     except OSError:

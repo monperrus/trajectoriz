@@ -228,6 +228,105 @@ def test_max_files_zero_disables_the_cap(tmp_path, use_grep):
     assert result.too_common == []
 
 
+# ── where the secret was sent ────────────────────────────────────────────────
+
+
+def _agentknit_session(dir_path: Path, secret: str, endpoint: str | None) -> Path:
+    """Write an agentknit journal plus, optionally, the payload it posted."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    journal = dir_path / "abcd_journal.jsonl"
+    call = "call_1"
+    events = [
+        {"type": "turn_start", "ts": "2026-09-04T13:18:19", "task": "read the keyring"},
+        {"type": "message", "ts": "2026-09-04T13:18:19",
+         "msg": {"role": "user", "content": "read the keyring"}},
+        {"type": "message", "ts": "2026-09-04T13:18:25", "msg": {
+            "role": "assistant", "content": "", "tool_calls": [
+                {"id": call, "type": "function",
+                 "function": {"name": "exec_shell",
+                              "arguments": json.dumps({"command": "secret-tool lookup x y"})}},
+            ],
+        }},
+        {"type": "message", "ts": "2026-09-04T13:18:26",
+         "msg": {"role": "tool", "tool_call_id": call, "content": f"secret = {secret}"}},
+    ]
+    journal.write_text("\n".join(json.dumps(e) for e in events) + "\n")
+    if endpoint:
+        (dir_path / "abcd_messages.json").write_text(json.dumps({
+            "metadata": {"endpoint": endpoint, "model": dir_path.name, "session_id": "abcd"},
+            "messages": [
+                {"role": "user", "content": "read the keyring"},
+                {"role": "tool", "content": f"secret = {secret}"},
+            ],
+        }))
+    return journal
+
+
+def test_finds_secret_in_an_agentknit_session_and_names_the_endpoint(tmp_path, use_grep):
+    journal = _agentknit_session(
+        tmp_path / "glm-5.3", TOKEN, "https://api.z.ai/api/coding/paas/v4"
+    )
+    record = tz.TrajectoryRecord(
+        id="ap-abcd1234", agent="agent_probe", timestamp="2026-09-04T13:18:19",
+        first_msg="read the keyring", source=journal,
+    )
+    result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
+
+    assert result.leaks
+    assert all(leak.destination == "glm-5.3 (api.z.ai)" for leak in result.leaks)
+    # The journal and the posted payload are both scanned.
+    assert {Path(leak.source).name for leak in result.leaks} == {
+        "abcd_journal.jsonl", "abcd_messages.json",
+    }
+    assert any(leak.step is not None for leak in result.leaks)
+
+
+def test_the_posted_payload_is_scanned_even_when_the_journal_is_clean(tmp_path, use_grep):
+    """The payload file is the request as sent, so it is evidence on its own."""
+    directory = tmp_path / "glm-5.3"
+    directory.mkdir(parents=True)
+    journal = directory / "abcd_journal.jsonl"
+    journal.write_text(json.dumps({"type": "turn_start", "task": "hello"}) + "\n")
+    (directory / "abcd_messages.json").write_text(json.dumps({
+        "metadata": {"endpoint": "https://api.z.ai/api/coding/paas/v4", "model": "glm-5.3"},
+        "messages": [{"role": "tool", "content": f"secret = {TOKEN}"}],
+    }))
+    record = tz.TrajectoryRecord(
+        id="ap-abcd1234", agent="agent_probe", timestamp="2026-09-04T13:18:19",
+        first_msg="hello", source=journal,
+    )
+    result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
+
+    assert len(result.leaks) == 1
+    assert Path(result.leaks[0].source).name == "abcd_messages.json"
+    assert result.leaks[0].destination == "glm-5.3 (api.z.ai)"
+
+
+def test_destination_falls_back_to_the_model_alone(tmp_path, use_grep):
+    journal = _agentknit_session(tmp_path / "glm-5.2", TOKEN, endpoint=None)
+    record = tz.TrajectoryRecord(
+        id="ap-abcd1234", agent="agent_probe", timestamp="2026-09-04T13:18:19",
+        first_msg="read the keyring", source=journal,
+    )
+    result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
+    assert result.leaks
+    assert all(leak.destination == "glm-5.2" for leak in result.leaks)
+
+
+def test_destinations_are_summarised_in_json(tmp_path, use_grep):
+    journal = _agentknit_session(
+        tmp_path / "glm-5.3", TOKEN, "https://api.z.ai/api/coding/paas/v4"
+    )
+    record = tz.TrajectoryRecord(
+        id="ap-abcd1234", agent="agent_probe", timestamp="2026-09-04T13:18:19",
+        first_msg="read the keyring", source=journal,
+    )
+    result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
+    dumped = _secrets.leaks_to_json(result)
+    assert dumped["summary"]["destinations"] == ["glm-5.3 (api.z.ai)"]
+    assert TOKEN not in json.dumps(dumped)
+
+
 # ── redaction ────────────────────────────────────────────────────────────────
 
 

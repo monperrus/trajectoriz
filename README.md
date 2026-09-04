@@ -112,12 +112,24 @@ trajectoriz-cli secrets --json
 ```
 ## Leaked secrets: 2 of 297 keyring secrets appear in cleartext in 4 trajectory(ies)
 
-### `github token` (fp `a1b2c3d4e5f6` — org.freedesktop.Secret.Generic)
+### Sent to
 
-| Agent  | Trajectory    | Date       | Step | Occurrences | Context                              |
+| Model endpoint          | Distinct secrets |
+|---|---|
+| claude-sonnet-5         | 2 |
+| glm-5.3 (api.z.ai)      | 1 |
+
+### `github token` (fp `a1b2c3d4e5f6`, 40 chars, org.freedesktop.Secret.Generic)
+
+| Agent  | Trajectory    | Date       | Step | Sent to         | Context                               |
 |---|---|---|---|---|---|
-| claude | `cl-4d72f7b5` | 2026-05-15 | 73   | 2           | …export GH_TOKEN=«REDACTED:40 chars»… |
+| claude | `cl-4d72f7b5` | 2026-05-15 | 73   | claude-sonnet-5 | …export GH_TOKEN=«REDACTED:40 chars»… |
 ```
+
+A secret in a trajectory step is a secret that was in the context window, so the report names
+the destination: the model, and the endpoint host when the log records it. That is the question
+worth answering, since a local file that never left the machine is a smaller problem than a
+credential handed to a third party.
 
 Secret values never appear in the output: a finding is identified by its keyring label and a
 SHA-256 fingerprint, and the match context is redacted — a report that quoted the secret would
@@ -125,8 +137,11 @@ just be the next leak. Exit status is 1 when something leaked, 0 when nothing di
 as a cron or pre-commit check.
 
 Coverage is the same store as `search`: every trajectory file plus the SQLite session stores
-(OpenCode, Copilot, Hermes, Codex), scanned as text so nothing hides in a DB page. Multi-line
-secrets (PEM keys) are matched on their longest line and flagged as partial.
+(OpenCode, Copilot, Hermes, Codex), scanned as text so nothing hides in a DB page. For
+agentknit sessions the `*_messages.json` payload written beside the journal is scanned too:
+that file is the request as it was posted to the endpoint, so it is the direct evidence of
+what left the machine. Multi-line secrets (PEM keys) are matched on their longest line and
+flagged as partial.
 
 Two things keep the report honest rather than noisy. Keyring values shorter than
 `--min-length` (default 8) are skipped, and a value that turns up in more than `--max-files`
