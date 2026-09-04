@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `trajectoriz-cli memory` mounts a read-only FUSE filesystem exposing each local
   trajectory as an ATIF v1.7 JSON file (`trajectoriz[fuse]` extra), with
   `--unmount` to recover a mountpoint whose daemon died.
+- `trajectoriz-cli secrets` reports OS keyring secrets that appear in cleartext in
+  local trajectories: every keyring value is searched verbatim (no entropy or
+  pattern heuristics) across trajectory files and the SQLite session stores.
+  Findings are reported by keyring label plus SHA-256 fingerprint with redacted
+  context — the value itself is never printed — and the command exits 1 on any hit.
 
 ### Changed
 

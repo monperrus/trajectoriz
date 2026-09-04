@@ -1230,6 +1230,135 @@ def cmd_memory(args) -> None:
         sys.exit(1)
 
 
+def _secret_title(leak) -> str:
+    labels = ", ".join(leak.labels)
+    schema = f", {leak.schema}" if leak.schema else ""
+    return f"`{labels}` (fp `{leak.fingerprint}`, {leak.length} chars{schema})"
+
+
+def _print_secrets_caveats(result, args, stream) -> None:
+    """Report what the scan did not, or could not, judge."""
+    if result.skipped_short:
+        print(
+            f"{result.skipped_short} keyring item(s) skipped as shorter than "
+            f"{args.min_length} chars"
+            + (f", {result.skipped_binary} as non-text" if result.skipped_binary else "")
+            + ".",
+            file=stream,
+        )
+    if result.too_common:
+        print(
+            f"\n{len(result.too_common)} keyring value(s) occur in more than "
+            f"{args.max_files} trajectories — ordinary text rather than a leaked "
+            f"credential (raise --max-files to see them as leaks):",
+            file=stream,
+        )
+        for common in result.too_common:
+            print(
+                f"  - `{', '.join(common.labels)}` (fp `{common.fingerprint}`, "
+                f"{common.length} chars): {common.files} files, "
+                f"{common.occurrences} occurrences",
+                file=stream,
+            )
+    if result.locked_collections:
+        print(
+            f"\nWarning: skipped locked keyring collection(s): "
+            f"{', '.join(result.locked_collections)}",
+            file=stream,
+        )
+
+
+def cmd_secrets(args) -> None:
+    """Report keyring secrets that appear in cleartext in local trajectories."""
+    from trajectoriz import _secrets
+
+    try:
+        secrets, locked, binary = _secrets.iter_keyring_secrets()
+    except RuntimeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    records = _local_records(str(Path(args.dir).resolve())) if args.dir else _all_records()
+    result = _secrets.scan(
+        secrets,
+        records,
+        min_length=args.min_length,
+        max_files=args.max_files,
+        use_grep=not args.no_grep,
+        locked_collections=locked,
+        skipped_binary=binary,
+    )
+
+    if args.json:
+        print(json.dumps(_secrets.leaks_to_json(result), indent=2))
+        sys.exit(1 if result.leaks else 0)
+
+    if not result.leaks:
+        # Nothing leaked: say so once, on stderr, so pipelines stay empty.
+        print(
+            f"No keyring secret found in cleartext "
+            f"({result.secrets_scanned} secret(s) × {result.files_scanned} trajectory file(s), "
+            f"{result.bytes_scanned / 1e6:.0f} MB).",
+            file=sys.stderr,
+        )
+        _print_secrets_caveats(result, args, stream=sys.stderr)
+        return
+
+    fingerprints = {leak.fingerprint for leak in result.leaks}
+    trajectories = {leak.trajectory_id for leak in result.leaks}
+    print(
+        f"## Leaked secrets: {len(fingerprints)} of {result.secrets_scanned} "
+        f"keyring secrets appear in cleartext in {len(trajectories)} trajectory(ies)\n"
+    )
+
+    if args.group_by == "trajectory":
+        keyfn = lambda leak: (leak.agent, leak.trajectory_id)  # noqa: E731
+        heading = lambda leak: f"### `{leak.trajectory_id}` ({leak.agent}, {leak.timestamp[:10]})"  # noqa: E731
+        columns = ("Keyring secret", "Step", "Occurrences", "Context")
+        row = lambda leak: (  # noqa: E731
+            _secret_title(leak),
+            str(leak.step) if leak.step is not None else "—",
+            str(leak.occurrences),
+            leak.context,
+        )
+    else:
+        keyfn = lambda leak: (leak.labels, leak.fingerprint)  # noqa: E731
+        heading = lambda leak: f"### {_secret_title(leak)}"  # noqa: E731
+        columns = ("Agent", "Trajectory", "Date", "Step", "Occurrences", "Context")
+        row = lambda leak: (  # noqa: E731
+            leak.agent,
+            f"`{leak.trajectory_id}`",
+            leak.timestamp[:10],
+            str(leak.step) if leak.step is not None else "—",
+            str(leak.occurrences),
+            leak.context,
+        )
+
+    groups: dict = {}
+    for leak in result.leaks:
+        groups.setdefault(keyfn(leak), []).append(leak)
+
+    for _, leaks in groups.items():
+        print(heading(leaks[0]))
+        if any(leak.partial for leak in leaks):
+            print("\n_Partial match: the longest line of a multi-line secret._")
+        print()
+        print("| " + " | ".join(columns) + " |")
+        print("|" + "---|" * len(columns))
+        for leak in leaks:
+            cells = [c.replace("|", "\\|") for c in row(leak)]
+            print("| " + " | ".join(cells) + " |")
+        print()
+
+    print(
+        f"Scanned {result.files_scanned} trajectory file(s) "
+        f"({result.bytes_scanned / 1e6:.0f} MB) for {result.secrets_scanned} keyring secret(s)."
+    )
+    _print_secrets_caveats(result, args, stream=sys.stdout)
+    print("\nInspect a hit with: trajectoriz-cli show <id> --step <n>")
+    sys.exit(1)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
@@ -1424,6 +1553,44 @@ def main() -> None:
         help="Unmount the mountpoint instead of mounting it (lazily if it is wedged).",
     )
     p_memory.set_defaults(func=cmd_memory)
+
+    # secrets
+    p_secrets = sub.add_parser(
+        "secrets",
+        help="Find keyring secrets that appear in cleartext in trajectories.",
+        description=(
+            "Search every local trajectory for the verbatim value of every secret in "
+            "the OS keyring. Secret values are never printed: findings identify a "
+            "secret by its keyring label and SHA-256 fingerprint, and match context "
+            "is redacted. Exits 1 when at least one secret leaked."
+        ),
+    )
+    p_secrets.add_argument(
+        "--dir", metavar="PATH",
+        help="Only scan trajectories of this directory (default: all trajectories).",
+    )
+    p_secrets.add_argument(
+        "--min-length", type=int, default=8, metavar="N",
+        help="Ignore keyring secrets shorter than N characters (default: 8).",
+    )
+    p_secrets.add_argument(
+        "--max-files", type=int, default=25, metavar="N",
+        help="Treat a keyring value occurring in more than N trajectories as ordinary "
+             "text and list it separately (default: 25; 0 disables the cap).",
+    )
+    p_secrets.add_argument(
+        "--group-by", choices=("secret", "trajectory"), default="secret",
+        help="Group findings by leaked secret (default) or by trajectory.",
+    )
+    p_secrets.add_argument(
+        "--no-grep", action="store_true",
+        help="Scan in process instead of shelling out to grep (slower).",
+    )
+    p_secrets.add_argument(
+        "--json", action="store_true",
+        help="Emit machine-readable JSON instead of a Markdown report.",
+    )
+    p_secrets.set_defaults(func=cmd_secrets)
 
     # refresh
     p_refresh = sub.add_parser(

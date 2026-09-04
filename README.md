@@ -89,7 +89,51 @@ trajectoriz-cli stats --all
 
 # Aggregate shell-invoked programs across a repo
 trajectoriz-cli advanced tools --dir /path/to/repo
+
+# Check whether any keyring secret leaked into a trajectory
+trajectoriz-cli secrets
 ```
+
+## Leaked secrets
+
+**trajectoriz-cli secrets** answers one question: has any secret in my OS keyring ever been
+written in cleartext into an agent trajectory? Agents print environment variables, `cat`
+config files and echo tokens into shell commands; all of it is kept forever in the trajectory
+store. The keyring is the ground truth of what a secret is, so there are no entropy or
+pattern heuristics here — every keyring value is searched for verbatim.
+
+```bash
+trajectoriz-cli secrets                     # scan every local trajectory
+trajectoriz-cli secrets --dir /path/to/repo # only this repo's trajectories
+trajectoriz-cli secrets --group-by trajectory
+trajectoriz-cli secrets --json
+```
+
+```
+## Leaked secrets: 2 of 297 keyring secrets appear in cleartext in 4 trajectory(ies)
+
+### `github token` (fp `a1b2c3d4e5f6` — org.freedesktop.Secret.Generic)
+
+| Agent  | Trajectory    | Date       | Step | Occurrences | Context                              |
+|---|---|---|---|---|---|
+| claude | `cl-4d72f7b5` | 2026-05-15 | 73   | 2           | …export GH_TOKEN=«REDACTED:40 chars»… |
+```
+
+Secret values never appear in the output: a finding is identified by its keyring label and a
+SHA-256 fingerprint, and the match context is redacted — a report that quoted the secret would
+just be the next leak. Exit status is 1 when something leaked, 0 when nothing did, so it works
+as a cron or pre-commit check.
+
+Coverage is the same store as `search`: every trajectory file plus the SQLite session stores
+(OpenCode, Copilot, Hermes, Codex), scanned as text so nothing hides in a DB page. Multi-line
+secrets (PEM keys) are matched on their longest line and flagged as partial.
+
+Two things keep the report honest rather than noisy. Keyring values shorter than
+`--min-length` (default 8) are skipped, and a value that turns up in more than `--max-files`
+trajectories (default 25) is listed separately as ordinary text — a dictionary-word password
+matches half the corpus and means nothing. Both are reported as counts, so nothing is dropped
+silently; `--max-files 0` removes the cap. Locked keyring collections are reported as
+unscanned rather than ignored.
 
 ## Memory filesystem
 
@@ -138,6 +182,7 @@ trajectoriz-cli memory --unmount ./memory       # lazily unmounts if it is wedge
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
 - **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
 - **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
+- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret, and reports hits redacted, by fingerprint
 
 ## Python API
 
