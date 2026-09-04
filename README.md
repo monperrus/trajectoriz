@@ -8,6 +8,15 @@ Library and CLI to search, browse, and analyze past agent trajectory files. Supp
 pip install trajectoriz
 ```
 
+## Features
+
+- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
+- **Search** — metadata by default (no parsing), `--content` for full-content search across messages, tool calls and results with three backends (sqlite / grep / recoll); space-separated words are AND, `\|` is OR
+- **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
+- **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
+- **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
+- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret, and reports hits redacted, by fingerprint
+
 ## Search
 
 **trajectoriz-cli search** lets you find past agent sessions — by what started them, or with
@@ -51,9 +60,7 @@ Then inspect any result:
 trajectoriz-cli show cl-4d72f7b5 --step 73
 ```
 
-### Search backends
-
-Backends apply to `--content` searches only.
+Search backends:
 
 | Backend | Setup | Semantics |
 |---|---|---|
@@ -188,16 +195,6 @@ unserviced, which hangs anything that walks the tree it sits in — recover it w
 ```bash
 trajectoriz-cli memory --unmount ./memory       # lazily unmounts if it is wedged
 ```
-
-## Features
-
-- **Search** — metadata by default (no parsing), `--content` for full-content search across messages, tool calls and results with three backends (sqlite / grep / recoll); space-separated words are AND, `\|` is OR
-- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
-- **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
-- **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
-- **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
-- **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
-- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret, and reports hits redacted, by fingerprint
 
 ## Python API
 
