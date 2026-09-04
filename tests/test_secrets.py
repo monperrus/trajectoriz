@@ -273,6 +273,8 @@ def test_finds_secret_in_an_agentknit_session_and_names_the_endpoint(tmp_path, u
     result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
 
     assert result.leaks
+    assert all(leak.model == "glm-5.3" for leak in result.leaks)
+    assert all(leak.endpoint == "api.z.ai" for leak in result.leaks)
     assert all(leak.destination == "glm-5.3 (api.z.ai)" for leak in result.leaks)
     # The journal and the posted payload are both scanned.
     assert {Path(leak.source).name for leak in result.leaks} == {
@@ -324,7 +326,16 @@ def test_destinations_are_summarised_in_json(tmp_path, use_grep):
     result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[])
     dumped = _secrets.leaks_to_json(result)
     assert dumped["summary"]["destinations"] == ["glm-5.3 (api.z.ai)"]
+    assert dumped["leaks"][0]["model"] == "glm-5.3"
+    assert dumped["leaks"][0]["endpoint"] == "api.z.ai"
     assert TOKEN not in json.dumps(dumped)
+
+
+def test_a_json_model_selector_is_unwrapped():
+    """OpenCode records the whole selector; the report needs the model id."""
+    assert _secrets._model_label('{"id":"kimi-k2.6","providerID":"azure"}') == "kimi-k2.6"
+    assert _secrets._model_label("claude-sonnet-5") == "claude-sonnet-5"
+    assert _secrets._model_label("{not json") == "{not json"
 
 
 # ── redaction ────────────────────────────────────────────────────────────────

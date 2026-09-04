@@ -12,6 +12,7 @@ leaked secret into a scan report would just create the next leak.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import sqlite3
 import subprocess
@@ -76,10 +77,15 @@ class Leak:
     timestamp: str
     step: int | None
     source: str
-    destination: str
+    model: str
+    endpoint: str
     occurrences: int
     context: str
     partial: bool
+
+    @property
+    def destination(self) -> str:
+        return format_destination(self.model, self.endpoint)
 
 
 @dataclass(frozen=True)
@@ -343,24 +349,47 @@ def _parse(record):
         return None
 
 
-def destination_of(traj) -> str:
-    """Name the remote endpoint a trajectory's conversation was sent to.
+def _model_label(model: str) -> str:
+    """Normalize a recorded model name to something readable.
+
+    Some agents store the whole model selector rather than its name (OpenCode
+    writes a JSON object), so unwrap that to the model id.
+    """
+    model = (model or "").strip()
+    if model.startswith("{"):
+        try:
+            parsed = json.loads(model)
+        except json.JSONDecodeError:
+            return model
+        if isinstance(parsed, dict):
+            return str(parsed.get("id") or parsed.get("model") or model)
+    return model
+
+
+def destination_of(traj) -> tuple[str, str]:
+    """Return (model, endpoint host) a trajectory's conversation was sent to.
 
     A secret in a conversation is a secret handed to whoever served that
     conversation, so the model and the host it was posted to are the finding
-    that matters most.
+    that matters most. Most agents record only the model; agentknit also
+    records the endpoint it posted to.
     """
     if traj is None:
-        return ""
-    model = traj.model_name or ""
+        return "", ""
+    model = _model_label(traj.model_name or "")
     endpoint = (traj.extra_agent or {}).get("endpoint") or ""
     host = ""
     if endpoint:
         match = re.match(r"[a-z]+://([^/]+)", endpoint)
         host = match.group(1) if match else endpoint
-    if model and host:
-        return f"{model} ({host})"
-    return model or host
+    return model, host
+
+
+def format_destination(model: str, endpoint: str) -> str:
+    """Render a destination for display: the model, and the host when known."""
+    if model and endpoint:
+        return f"{model} ({endpoint})"
+    return model or endpoint
 
 
 def _steps_containing(traj, needle: str) -> list[tuple[int, str]]:
@@ -396,6 +425,7 @@ def _leaks_for_file(
     leaks: list[Leak] = []
     parsed = [(record, _parse(record)) for record in records]
     for record, traj in parsed:
+        model, endpoint = destination_of(traj)
         for step_id, blob in _steps_containing(traj, needle):
             leaks.append(
                 Leak(
@@ -408,7 +438,8 @@ def _leaks_for_file(
                     timestamp=record.timestamp,
                     step=step_id,
                     source=str(path),
-                    destination=destination_of(traj),
+                    model=model,
+                    endpoint=endpoint,
                     occurrences=blob.count(needle),
                     context=redact(blob, needle),
                     partial=needle != secret.value,
@@ -420,6 +451,7 @@ def _leaks_for_file(
     # Present in the file but not attributable to a parsed step (metadata
     # lines, an unparseable format, sidecar fields): still a leak.
     record, traj = parsed[0] if parsed else (None, None)
+    model, endpoint = destination_of(traj)
     return [
         Leak(
             fingerprint=secret.fingerprint,
@@ -431,7 +463,8 @@ def _leaks_for_file(
             timestamp=record.timestamp if record else "",
             step=None,
             source=str(path),
-            destination=destination_of(traj),
+            model=model,
+            endpoint=endpoint,
             occurrences=occurrences,
             context=_file_context(path, needle),
             partial=needle != secret.value,
@@ -523,7 +556,8 @@ def _leaks_for_store(
                 timestamp=timestamp,
                 step=None,
                 source=f"{path}:{table}",
-                destination=models.get(traj_id, ""),
+                model=_model_label(models.get(traj_id, "")),
+                endpoint="",
                 occurrences=count,
                 context=redact(text, needle),
                 partial=needle != secret.value,
@@ -679,7 +713,8 @@ def leaks_to_json(result: ScanResult) -> dict:
                 "timestamp": leak.timestamp,
                 "step": leak.step,
                 "source": leak.source,
-                "destination": leak.destination,
+                "model": leak.model,
+                "endpoint": leak.endpoint,
                 "occurrences": leak.occurrences,
                 "context": leak.context,
                 "partial_match": leak.partial,

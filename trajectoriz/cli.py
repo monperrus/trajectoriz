@@ -1312,17 +1312,23 @@ def cmd_secrets(args) -> None:
     )
 
     # Which remote endpoints held a conversation containing a secret, and how
-    # many distinct secrets each one saw.
-    per_destination: dict[str, set[str]] = {}
+    # many distinct secrets each one saw. Only some agents log the endpoint, so
+    # hosts are merged into the model's row rather than splitting it in two.
+    per_model: dict[str, set[str]] = {}
+    hosts: dict[str, set[str]] = {}
     for leak in result.leaks:
-        if leak.destination:
-            per_destination.setdefault(leak.destination, set()).add(leak.fingerprint)
-    if per_destination:
+        if not leak.model:
+            continue
+        per_model.setdefault(leak.model, set()).add(leak.fingerprint)
+        if leak.endpoint:
+            hosts.setdefault(leak.model, set()).add(leak.endpoint)
+    if per_model:
         print("### Sent to\n")
-        print("| Model endpoint | Distinct secrets |")
-        print("|---|---|")
-        for destination, fps in sorted(per_destination.items(), key=lambda kv: -len(kv[1])):
-            print(f"| {destination} | {len(fps)} |")
+        print("| Model | Endpoint | Distinct secrets |")
+        print("|---|---|---|")
+        for model, fps in sorted(per_model.items(), key=lambda kv: -len(kv[1])):
+            endpoint = ", ".join(sorted(hosts.get(model, ()))) or "not logged"
+            print(f"| {model} | {endpoint} | {len(fps)} |")
         print()
 
     if args.group_by == "trajectory":
