@@ -211,6 +211,13 @@ trajectoriz-cli memory --unmount ./memory       # unmounts lazily, and aborts th
                                                 # already stuck on it
 ```
 
+To clear several at once — or a mount left over from an older version —
+`scripts/fuse-abort.sh` lists every FUSE connection with the mount it serves and
+the number of requests stuck on it, and aborts the bricked ones. It is a dry run
+until passed `--go`, and never touches connections matching `$KEEP` (portals,
+gvfs, AppImages, sshfs and friends), because aborting a healthy connection breaks
+whatever uses it.
+
 ## Python API
 
 ```python
