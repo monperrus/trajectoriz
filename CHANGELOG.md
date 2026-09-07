@@ -43,6 +43,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The memory filesystem could deadlock the whole machine.** Store scans walked
+  into FUSE mounts — `~/.local/share/agent_probe` is often a symlink into a repo,
+  and that repo can hold a memory mount — so a daemon scanning its stores from
+  inside a request waited on a reply it was itself supposed to send. The kernel
+  holds the mount's inode lock for the duration, so every process that then
+  touched the directory (git, pytest, ripgrep, a language server, the agent's own
+  file tools) ended up in uninterruptible `D` state, unkillable even by SIGKILL.
+  Three changes: store walks skip FUSE mountpoints (read from `/proc/self/mountinfo`,
+  never by stat'ing a mountpoint that may hang) and the daemon's own mountpoint;
+  the scan runs off the request path with a deadline, so no handler can block
+  indefinitely; and `memory --unmount` now aborts a wedged FUSE connection, which
+  is the only thing that releases processes already stuck on it.
+- `ls -l`, `find` and git no longer render every trajectory in a mount just to
+  learn its size: the ATIF payload size is memoized on disk with the other
+  per-file probes. Stat'ing a 108-file mount went from 1.9s to 0.1s.
 - **agent_probe sessions were being missed**: the store was walked at a fixed
   depth (`*/*/*.jsonl`), which skipped the 499 sessions filed one level up or in
   the store root, including every agentknit run. The walk is now recursive.

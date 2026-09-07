@@ -6,10 +6,12 @@ __version__ = "0.1.0"
 # on-disk parse cache is keyed by it, so a stale entry can never mask a fix.
 PARSER_REVISION = 2
 
+import fnmatch
 import json
 import hashlib
 import math
 import pickle
+import threading
 from dataclasses import dataclass, field
 import os
 import re
@@ -17,12 +19,126 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 
+_excluded_lock = threading.Lock()
+_excluded_dirs: set[str] = set()
+
+
+def exclude_from_scans(*paths) -> None:
+    """Never descend into these directories when walking a trajectory store.
+
+    For the one path the mount table cannot be trusted to reveal in time: a
+    memory daemon's own mountpoint. It appears in /proc a moment after the
+    daemon starts serving, and a scan that walks into it deadlocks the mount
+    — the daemon would be waiting for a reply it is itself supposed to send.
+    """
+    with _excluded_lock:
+        _excluded_dirs.update(os.path.abspath(os.path.expanduser(str(p))) for p in paths)
+
+
+def fuse_mount_points(mountinfo: str = "/proc/self/mountinfo") -> frozenset[str]:
+    """Return the mountpoints currently served by FUSE, read from /proc.
+
+    Deliberately parses /proc instead of calling os.path.ismount(): when a
+    FUSE daemon is wedged or has died without unmounting, every stat() of its
+    mountpoint blocks in uninterruptible sleep, and detecting that state must
+    not be what hangs. Read afresh on every walk rather than memoized: it
+    costs a single /proc read, and a mount table cached even briefly can miss
+    a mount that appeared since — which is precisely the mount that hangs.
+    """
+    points: set[str] = set()
+    try:
+        with open(mountinfo, encoding="utf-8") as fh:
+            for line in fh:
+                fields = line.split()
+                if len(fields) < 5 or "-" not in fields:
+                    continue
+                fstype = fields[fields.index("-") + 1]
+                if fstype == "fuse" or fstype.startswith("fuse"):
+                    # mountinfo escapes spaces and friends as octal
+                    points.add(fields[4].encode().decode("unicode_escape"))
+    except OSError:
+        pass
+    return frozenset(points)
+
+
+def iter_files_outside_fuse(base, pattern: str = "*.jsonl", mountinfo=None):
+    """Yield files matching pattern under base, never descending into a FUSE mount.
+
+    Path.rglob() would: it follows directory symlinks and knows nothing about
+    mountpoints, so a store that happens to contain (or symlink to) a FUSE
+    directory drags the walk into another filesystem. That is not merely slow.
+    A trajectory store reached this way can hold a trajectoriz memory mount,
+    and a memory daemon scanning its own or a sibling mount deadlocks: the
+    kernel holds the mount's inode lock while the daemon waits for a reply it
+    is itself supposed to send, and every process that then touches the
+    directory blocks in D state, immune to SIGKILL.
+
+    Directory symlinks are still followed — the agent_probe store is one — but
+    a symlink's target is resolved textually and checked against the mount
+    table before being entered, and each directory is visited at most once so
+    a symlink cycle cannot spin forever.
+    """
+    mounts = fuse_mount_points(mountinfo) if mountinfo else fuse_mount_points()
+    with _excluded_lock:
+        mounts = mounts | _excluded_dirs
+    walk = os.path.abspath(os.path.expanduser(str(base)))
+    real = os.path.normpath(os.path.join(os.path.dirname(walk), os.readlink(walk))) \
+        if os.path.islink(walk) else walk
+    if walk in mounts or real in mounts:
+        return
+    seen: set[str] = set()
+    stack = [(walk, real)]
+    while stack:
+        walk_dir, real_dir = stack.pop()
+        if real_dir in seen:
+            continue
+        seen.add(real_dir)
+        try:
+            with os.scandir(walk_dir) as it:
+                entries = sorted(it, key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            child = os.path.join(walk_dir, entry.name)
+            # Excluded before anything is asked about the entry: the question
+            # "is this a directory?" is itself answered by the daemon of a
+            # mount, so it must not be asked about a mount we mean to skip.
+            if child in mounts:
+                continue
+            try:
+                symlink = entry.is_symlink()
+            except OSError:
+                continue
+            if symlink:
+                try:
+                    target = os.readlink(child)
+                except OSError:
+                    continue
+                real_child = os.path.normpath(os.path.join(walk_dir, target))
+            else:
+                real_child = os.path.join(real_dir, entry.name)
+            if real_child in mounts:
+                continue        # reached under another name, same wedged mount
+            try:
+                if entry.is_dir(follow_symlinks=True):
+                    stack.append((child, real_child))
+                    continue
+            except OSError:
+                continue
+            if fnmatch.fnmatch(entry.name, pattern):
+                yield Path(child)
+
+
+def _rglob_outside_fuse(base: Path, pattern: str = "*.jsonl") -> list[Path]:
+    """sorted() Path.rglob(pattern) without ever entering a FUSE mount."""
+    return sorted(iter_files_outside_fuse(base, pattern), key=str)
+
 
 def iter_claude_trajectories(claude_dir=None):
     """Yield all Claude Code trajectory JSONL paths."""
     d = Path(claude_dir) if claude_dir else Path.home() / ".claude"
     if d.is_dir():
-        yield from sorted(d.glob("projects/**/*.jsonl"))
+        yield from _rglob_outside_fuse(d / "projects")
 
 
 def claude_project_dir(repo_root: str, claude_dir=None) -> Path:
@@ -44,7 +160,7 @@ def iter_codex_trajectories(codex_dir=None):
     d = Path(codex_dir) if codex_dir else Path.home() / ".codex"
     base = d / "sessions"
     if base.is_dir():
-        yield from sorted(base.rglob("*.jsonl"))
+        yield from _rglob_outside_fuse(base)
 
 
 def iter_codex_rollout_files(codex_dir=None):
@@ -52,7 +168,7 @@ def iter_codex_rollout_files(codex_dir=None):
     d = Path(codex_dir) if codex_dir else Path.home() / ".codex"
     base = d / "sessions"
     if base.is_dir():
-        yield from sorted(base.rglob("rollout-*.jsonl"))
+        yield from _rglob_outside_fuse(base, "rollout-*.jsonl")
 
 
 def iter_pi_trajectories(pi_dir=None):
@@ -63,7 +179,7 @@ def iter_pi_trajectories(pi_dir=None):
         env = os.environ.get("PI_CODING_AGENT_DIR")
         d = Path(env) / "sessions" if env else Path.home() / ".pi" / "agent" / "sessions"
     if d.is_dir():
-        yield from sorted(d.rglob("*.jsonl"))
+        yield from _rglob_outside_fuse(d)
 
 
 def iter_cursor_trajectories(cursor_dir=None):
@@ -72,8 +188,8 @@ def iter_cursor_trajectories(cursor_dir=None):
     if not d.is_dir():
         return
     seen = set()
-    for pattern in ("sessions/**/*.jsonl", "projects/**/*.jsonl"):
-        for p in sorted(d.glob(pattern)):
+    for sub in ("sessions", "projects"):
+        for p in _rglob_outside_fuse(d / sub):
             if p not in seen:
                 seen.add(p)
                 yield p
@@ -100,7 +216,7 @@ def iter_agent_probe_trajectories(agent_probe_dir=None):
         else Path.home() / ".local" / "share" / "agent_probe"
     )
     if d.is_dir():
-        yield from sorted(d.rglob("*.jsonl"))
+        yield from _rglob_outside_fuse(d)
 
 
 def agent_probe_sidecar(jsonl_path) -> Path | None:
@@ -1998,7 +2114,7 @@ def iter_extra_folder_trajectories(folders: list[str]):
         folder = Path(folder_str).expanduser()
         if not folder.is_dir():
             continue
-        for p in sorted(folder.rglob("*.jsonl"), key=str):
+        for p in _rglob_outside_fuse(folder):
             fmt = _scan_fmt(p)
             if fmt:
                 yield p, fmt

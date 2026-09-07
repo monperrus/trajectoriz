@@ -6,6 +6,13 @@ first access. The filesystem is built to survive a coding agent browsing it:
 * The directory listing comes from one scan of the trajectory stores, shared
   by every operation and refreshed at most once per ``listing_ttl`` seconds,
   so a new session still appears without remounting.
+* That scan runs in a helper thread and a request waits at most
+  ``scan_timeout`` seconds for it, serving the previous listing when the
+  deadline passes. A FUSE handler that blocks indefinitely is not a slow
+  mount but a wedged one: the kernel holds the mount's inode lock for the
+  duration, so every process that so much as stats the directory ends up in
+  uninterruptible sleep, unkillable even by SIGKILL. Nothing on the request
+  path may wait without a deadline.
 * A file's ATIF payload is rendered once per ``open`` and served from an
   open-file handle, so the kernel's many read requests for one file cost a
   slice each instead of a re-render.
@@ -27,10 +34,12 @@ from pathlib import Path
 import fuse  # pyright: ignore[reportMissingImports]  # optional 'fuse' extra
 
 import trajectoriz as tz
+from . import _scancache
 from . import atif as atif_mod
 
 DEFAULT_LISTING_TTL = 2.0                       # seconds
 DEFAULT_CACHE_BYTES = 256 * 1024 * 1024         # rendered payloads held in memory
+DEFAULT_SCAN_TIMEOUT = 10.0                     # longest a request waits on a scan
 _MISS_REFRESH_AGE = 1.0                         # rescan on ENOENT at most this often
 
 README_NAME = "README.md"
@@ -98,13 +107,16 @@ class MemoryFS(fuse.Operations):
         repo_root: str,
         listing_ttl: float = DEFAULT_LISTING_TTL,
         cache_bytes: int = DEFAULT_CACHE_BYTES,
+        scan_timeout: float = DEFAULT_SCAN_TIMEOUT,
     ):
         self.repo_root = repo_root
         self.listing_ttl = listing_ttl
         self.cache_bytes = cache_bytes
+        self.scan_timeout = scan_timeout
         self._mount_time = time.time()
-        self._lock = threading.Lock()       # guards the caches below
-        self._scan_lock = threading.Lock()  # lets one thread scan at a time
+        self._lock = threading.Condition()  # guards the caches below
+        self._scanning = False              # a scan thread is in flight
+        self._scans = 0                     # completed scans, for waiters
         self._listing: dict[str, tz.TrajectoryRecord] | None = None
         self._listing_at = 0.0
         self._content: OrderedDict[str, tuple[float, bytes]] = OrderedDict()
@@ -125,26 +137,55 @@ class MemoryFS(fuse.Operations):
                 return None
             return self._listing
 
+    def _scan(self) -> None:
+        """Rescan the stores and publish the result. Runs off the request path."""
+        scanned: dict[str, tz.TrajectoryRecord] | None = None
+        try:
+            scanned = {
+                _filename_for(rec): rec
+                for rec in tz.iter_local_records(self.repo_root)
+            }
+        except Exception:
+            # A broken store must not take the mount down with it: keep
+            # serving the last good listing and let the next scan try again.
+            pass
+        with self._lock:
+            if scanned is not None:
+                self._listing = scanned
+                self._listing_at = time.monotonic()
+                self._scans += 1
+            self._scanning = False
+            self._lock.notify_all()
+
     def _records(self, max_age: float | None = None) -> dict[str, tz.TrajectoryRecord]:
-        """Return {filename: record}, scanning the stores only when stale."""
+        """Return {filename: record}, scanning the stores only when stale.
+
+        Waits at most ``scan_timeout`` for the scan: past that the previous
+        listing (or an empty one, before the first scan lands) is served
+        rather than holding the mount's inode lock open-endedly.
+        """
         if max_age is None:
             max_age = self.listing_ttl
         listing = self._cached_listing(max_age)
         if listing is not None:
             return listing
-        with self._scan_lock:
-            # Another thread may have refreshed the listing while we queued.
-            listing = self._cached_listing(max_age)
-            if listing is not None:
-                return listing
-            scanned = {
-                _filename_for(rec): rec
-                for rec in tz.iter_local_records(self.repo_root)
-            }
-            with self._lock:
-                self._listing = scanned
-                self._listing_at = time.monotonic()
-            return scanned
+        with self._lock:
+            target = self._scans + 1
+            start = not self._scanning
+            if start:
+                self._scanning = True
+        if start:
+            threading.Thread(
+                target=self._scan, name="memoryfs-scan", daemon=True
+            ).start()
+        deadline = time.monotonic() + self.scan_timeout
+        with self._lock:
+            while self._scans < target:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._lock.wait(remaining)
+            return self._listing if self._listing is not None else {}
 
     def _content_for(self, name: str, rec: tz.TrajectoryRecord) -> bytes:
         """Return the ATIF payload for a record, rendering it at most once."""
@@ -172,6 +213,34 @@ class MemoryFS(fuse.Operations):
                 self._content_bytes -= len(evicted)
         return data
 
+    def _size_of(self, name: str, rec: tz.TrajectoryRecord) -> int:
+        """Return the ATIF payload size, from the disk cache when possible.
+
+        A tree walk (``ls -l``, ``find``, git, an agent listing the directory)
+        stats every file without reading one, and rendering a whole trajectory
+        to answer st_size makes that walk cost as much as reading everything.
+        The size is a pure function of the source file and the renderer, so it
+        is memoized like the other per-file probes — keyed by the parser
+        revision, since a renderer change changes the length.
+        """
+        if not isinstance(rec.source, Path):
+            return len(self._content_for(name, rec))
+        cached = self._content_size(name, _source_mtime(rec))
+        if cached is not None:
+            return cached
+        size = _scancache.memo(
+            rec.source,
+            f"atif_size_r{tz.PARSER_REVISION}",
+            lambda: len(self._content_for(name, rec)),
+        )
+        return size if isinstance(size, int) else len(self._content_for(name, rec))
+
+    def _content_size(self, name: str, mtime: float) -> int | None:
+        """The size of an already-rendered payload, without touching the LRU."""
+        with self._lock:
+            hit = self._content.get(name)
+        return len(hit[1]) if hit is not None and hit[0] == mtime else None
+
     def _lookup(self, path: str) -> tuple[str, tz.TrajectoryRecord]:
         name = path.lstrip("/")
         rec = self._records().get(name)
@@ -197,14 +266,14 @@ class MemoryFS(fuse.Operations):
                 "st_ctime": now, "st_mtime": now, "st_atime": now,
             }
         if path == "/" + README_NAME:
-            data = self._readme
+            size = len(self._readme)
         else:
             name, rec = self._lookup(path)
-            data = self._content_for(name, rec)
+            size = self._size_of(name, rec)
         return {
             "st_mode": stat.S_IFREG | 0o444,
             "st_nlink": 1,
-            "st_size": len(data),
+            "st_size": size,
             "st_uid": uid, "st_gid": gid,
             "st_ctime": now, "st_mtime": now, "st_atime": now,
         }

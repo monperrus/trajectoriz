@@ -185,15 +185,30 @@ Use `--dir PATH` to expose a different repo's trajectories instead of the curren
 If the mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
 
 The mount is built for tools that walk and read files: one store scan serves the whole
-directory listing (refreshed every couple of seconds, so new sessions still show up), and each
-trajectory's ATIF payload is rendered once per open, then served from memory. Reading every
-file in a mount of 30 trajectories takes ~0.1s.
+directory listing (refreshed every couple of seconds, so new sessions still show up), each
+trajectory's ATIF payload is rendered once per open and then served from memory, and a file's
+size is memoized on disk so `ls -l`, `find` and git can stat the whole directory without
+rendering anything. Reading every file in a mount of 30 trajectories takes ~0.1s.
 
-If a mount ever stops responding — a killed daemon leaves the mountpoint attached but
+Two rules keep the mount from taking the machine with it if something goes wrong:
+
+- **Store scans never descend into a FUSE mount.** They would otherwise: `~/.local/share/agent_probe`
+  is commonly a symlink into a repo, and that repo can hold a memory mount of its own — so a
+  daemon would end up sending itself a request from inside a request.
+- **No request waits without a deadline.** The kernel holds a mount's inode lock while a
+  handler runs, so a handler that blocks forever leaves every process that touches the
+  directory in uninterruptible sleep — `D` state, which SIGKILL cannot end. A scan runs off
+  the request path and a request waits at most 10s for it, serving the previous listing after
+  that.
+
+If a mount ever stops responding — a killed or wedged daemon leaves the mountpoint attached but
 unserviced, which hangs anything that walks the tree it sits in — recover it with:
 
 ```bash
-trajectoriz-cli memory --unmount ./memory       # lazily unmounts if it is wedged
+trajectoriz-cli memory --unmount ./memory       # unmounts lazily, and aborts the
+                                                # FUSE connection if it is wedged,
+                                                # which is what frees processes
+                                                # already stuck on it
 ```
 
 ## Python API

@@ -1121,13 +1121,17 @@ def _ensure_gitignored(path: Path) -> None:
 
 
 def _fuse_mountpoints(mountinfo: str = "/proc/self/mountinfo") -> set[str]:
-    """Return mountpoints currently served by FUSE, read from /proc.
+    """Return mountpoints currently served by FUSE, read from /proc."""
+    return set(tz.fuse_mount_points(mountinfo))
 
-    Deliberately parses /proc instead of calling os.path.ismount(): when a
-    FUSE daemon has died without unmounting, every stat() of its mountpoint
-    blocks forever, and detecting that state must not be what hangs.
+
+def _fuse_connection(mountpoint: str, mountinfo: str = "/proc/self/mountinfo") -> str | None:
+    """Return the /sys/fs/fuse/connections id of a mountpoint, or None.
+
+    A FUSE connection is identified by the minor number of its device, which
+    mountinfo gives as field 3 — so this, like everything else that inspects
+    a possibly-wedged mount, never stats the mountpoint itself.
     """
-    points: set[str] = set()
     try:
         with open(mountinfo, encoding="utf-8") as fh:
             for line in fh:
@@ -1135,16 +1139,39 @@ def _fuse_mountpoints(mountinfo: str = "/proc/self/mountinfo") -> set[str]:
                 if len(fields) < 5 or "-" not in fields:
                     continue
                 fstype = fields[fields.index("-") + 1]
-                if fstype == "fuse" or fstype.startswith("fuse."):
-                    # mountinfo escapes spaces and friends as octal
-                    points.add(fields[4].encode().decode("unicode_escape"))
+                if not (fstype == "fuse" or fstype.startswith("fuse")):
+                    continue
+                point = fields[4].encode().decode("unicode_escape")
+                if point == mountpoint:
+                    return fields[2].split(":")[-1]
     except OSError:
         pass
-    return points
+    return None
+
+
+def _abort_fuse_connection(connection: str, root: str = "/sys/fs/fuse/connections") -> bool:
+    """Fail every request in flight on a FUSE connection.
+
+    The only way out of the wedged case: unmounting detaches the directory
+    but leaves the pending requests pending, and their callers sit in
+    uninterruptible sleep — a state SIGKILL cannot touch. Aborting the
+    connection makes those requests return an error, and only then can the
+    blocked processes (and the daemon) be reaped.
+    """
+    try:
+        with open(os.path.join(root, connection, "abort"), "w") as fh:
+            fh.write("1")
+        return True
+    except OSError:
+        return False
 
 
 def _unmount(mountpoint: str) -> int:
     """Unmount a FUSE mountpoint, lazily if it is busy or unresponsive."""
+    # Read the connection id first: the mountinfo row is gone once unmounted.
+    connection = _fuse_connection(mountpoint)
+    lazy = False
+    unmounted = False
     for cmd in (
         ["fusermount", "-u", mountpoint],
         ["fusermount3", "-u", mountpoint],
@@ -1157,8 +1184,22 @@ def _unmount(mountpoint: str) -> int:
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
         if result.returncode == 0:
+            lazy = "-uz" in cmd or "-l" in cmd
+            unmounted = True
             print(f"Unmounted {mountpoint}")
-            return 0
+            break
+
+    if unmounted and not lazy:
+        return 0
+
+    # Either the mount was busy enough to need a lazy unmount, or it would not
+    # come off at all. Both mean requests may be stuck against a daemon that
+    # is not answering, so release them.
+    if connection and _abort_fuse_connection(connection):
+        print(f"Aborted the FUSE connection of {mountpoint} (it was unresponsive).")
+        return 0
+    if unmounted:
+        return 0
     print(
         f"Error: could not unmount {mountpoint}.\n"
         "If a daemon is wedged, kill it and retry, or run: "
@@ -1209,6 +1250,13 @@ def cmd_memory(args) -> None:
         sys.exit(1)
 
     _ensure_gitignored(mountpoint)
+
+    # A scan of this repo's stores must never walk into the directory this
+    # daemon is about to serve: it would be waiting on itself, wedging the
+    # mount for good. The mount table cannot be relied on for it — the mount
+    # shows up in /proc only after the daemon starts answering — so exclude
+    # the path outright.
+    tz.exclude_from_scans(target)
 
     if not args.foreground:
         print(f"Mounting trajectory memory for {repo_root} at {mountpoint} (daemonized).")

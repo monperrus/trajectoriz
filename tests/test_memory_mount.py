@@ -6,7 +6,7 @@ touch the filesystem.
 """
 from __future__ import annotations
 
-from trajectoriz.cli import _fuse_mountpoints
+from trajectoriz.cli import _abort_fuse_connection, _fuse_connection, _fuse_mountpoints
 
 _MOUNTINFO = """\
 23 28 0:22 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
@@ -37,3 +37,26 @@ def test_malformed_lines_are_skipped(tmp_path):
     mountinfo.write_text("garbage\n\n23 28 0:22 /\n" + _MOUNTINFO)
 
     assert _fuse_mountpoints(str(mountinfo)) == {"/home/u/repo/memory", "/mnt/with space"}
+
+
+def test_connection_id_is_the_device_minor(tmp_path):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(_MOUNTINFO)
+
+    assert _fuse_connection("/home/u/repo/memory", str(mountinfo)) == "55"
+    assert _fuse_connection("/mnt/with space", str(mountinfo)) == "56"
+    assert _fuse_connection("/", str(mountinfo)) is None, "not a FUSE mount"
+    assert _fuse_connection("/nowhere", str(mountinfo)) is None
+
+
+def test_aborting_a_connection_writes_to_sysfs(tmp_path):
+    conn = tmp_path / "55"
+    conn.mkdir()
+    (conn / "abort").write_text("")
+
+    assert _abort_fuse_connection("55", str(tmp_path)) is True
+    assert (conn / "abort").read_text() == "1"
+
+
+def test_aborting_an_unknown_connection_is_not_an_error(tmp_path):
+    assert _abort_fuse_connection("999", str(tmp_path)) is False
