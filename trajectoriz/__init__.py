@@ -1,6 +1,6 @@
 """trajectoriz: locate and parse agent trajectory files on the local machine."""
 
-__version__ = "0.1.0"
+__version__ = "0.9999.0"
 
 # Bump whenever a parser reads more of a trajectory than it used to: the
 # on-disk parse cache is keyed by it, so a stale entry can never mask a fix.

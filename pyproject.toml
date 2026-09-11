@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trajectoriz"
-version = "0.1.0"
+version = "0.9999.0"
 description = "Locate agent trajectory files on the local machine"
 readme = "README.md"
 license = "MIT"

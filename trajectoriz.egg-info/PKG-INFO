@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: trajectoriz
-Version: 0.1.0
+Version: 0.9999.0
 Summary: Locate agent trajectory files on the local machine
 License-Expression: MIT
 Requires-Python: >=3.8
@@ -8,6 +8,8 @@ Description-Content-Type: text/markdown
 License-File: LICENSE
 Provides-Extra: fuse
 Requires-Dist: fusepy>=3.0; extra == "fuse"
+Provides-Extra: keyring
+Requires-Dist: secretstorage>=3.3; extra == "keyring"
 Dynamic: license-file
 
 # trajectoriz
@@ -20,27 +22,42 @@ Library and CLI to search, browse, and analyze past agent trajectory files. Supp
 pip install trajectoriz
 ```
 
+## Features
+
+- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
+- **Search** — metadata by default (no parsing), `--content` for full-content search across messages, tool calls and results with three backends (sqlite / grep / recoll); space-separated words are AND, `\|` is OR
+- **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
+- **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
+- **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
+- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret, and reports hits redacted, by fingerprint
+
 ## Search
 
-**trajectoriz-cli search** lets you find past agent sessions by content — what was discussed, what commands were run, what files were edited.
+**trajectoriz-cli search** lets you find past agent sessions — by what started them, or with
+`--content`, by everything that was discussed, run and edited inside them.
+
+By default it searches first messages, IDs and agent names, which needs no trajectory parsing
+and answers the common question ("which session was that?") immediately. `--content` searches
+every step instead: slower, exhaustive.
 
 ```bash
-# AND semantics: all words must appear in a step
-trajectoriz-cli search "salary KTH overhead"
-trajectoriz-cli search "telegram send_message bot_token"
-trajectoriz-cli search "deploy dokku researchers webapp"
+# Locate a session (default: first messages and metadata)
+trajectoriz-cli search "refactor auth"
+
+# Search inside every step: tool calls, their results, all messages
+trajectoriz-cli search "salary KTH overhead" --content
+
+# AND semantics: all words must appear
+trajectoriz-cli search "telegram send_message bot_token" --content
 
 # OR semantics: use \| between alternatives
-trajectoriz-cli search "pytest\|unittest"
+trajectoriz-cli search "pytest\|unittest" --content
 
 # Restrict to the current project
 trajectoriz-cli search "fix login bug" --local
-
-# Fast metadata-only search (first message only, no parsing)
-trajectoriz-cli search "refactor auth" --fast
 ```
 
-Results are returned as a paginated Markdown table with trajectory ID, agent, date, step number, and a context snippet:
+With `--content`, results are a paginated Markdown table with trajectory ID, agent, date, step number, and a context snippet:
 
 ```
 ## Search: `salary KTH overhead` — 8 match(es)
@@ -57,17 +74,17 @@ Then inspect any result:
 trajectoriz-cli show cl-4d72f7b5 --step 73
 ```
 
-### Search backends
+Search backends:
 
 | Backend | Setup | Semantics |
 |---|---|---|
-| `grep` (default) | none | substring, in-process |
-| `sqlite` | `trajectoriz-cli refresh --no-recoll` | whole-word FTS5 |
+| `sqlite` (default) | builds itself; `trajectoriz-cli refresh --no-recoll` to rebuild | whole-word FTS5 |
+| `grep` | none | substring, in-process, always fresh |
 | `recoll` | `trajectoriz-cli refresh --no-sqlite` | full Xapian index |
 
 ```bash
-trajectoriz-cli search "openssl handshake" --backend sqlite
-trajectoriz-cli search "openssl handshake" --backend recoll
+trajectoriz-cli search "openssl handshake" --content --backend sqlite
+trajectoriz-cli search "openssl handshake" --content --backend recoll
 ```
 
 ## CLI
@@ -93,7 +110,66 @@ trajectoriz-cli stats --all
 
 # Aggregate shell-invoked programs across a repo
 trajectoriz-cli advanced tools --dir /path/to/repo
+
+# Check whether any keyring secret leaked into a trajectory
+trajectoriz-cli secrets
 ```
+
+## Leaked secrets
+
+**trajectoriz-cli secrets** answers one question: has any secret in my OS keyring ever been
+written in cleartext into an agent trajectory? Agents print environment variables, `cat`
+config files and echo tokens into shell commands; all of it is kept forever in the trajectory
+store. The keyring is the ground truth of what a secret is, so there are no entropy or
+pattern heuristics here — every keyring value is searched for verbatim.
+
+```bash
+trajectoriz-cli secrets                     # scan every local trajectory
+trajectoriz-cli secrets --dir /path/to/repo # only this repo's trajectories
+trajectoriz-cli secrets --group-by trajectory
+trajectoriz-cli secrets --json
+```
+
+```
+## Leaked secrets: 2 of 297 keyring secrets appear in cleartext in 4 trajectory(ies)
+
+### Sent to
+
+| Model endpoint          | Distinct secrets |
+|---|---|
+| claude-sonnet-5         | 2 |
+| glm-5.3 (api.z.ai)      | 1 |
+
+### `github token` (fp `a1b2c3d4e5f6`, 40 chars, org.freedesktop.Secret.Generic)
+
+| Agent  | Trajectory    | Date       | Step | Sent to         | Context                               |
+|---|---|---|---|---|---|
+| claude | `cl-4d72f7b5` | 2026-05-15 | 73   | claude-sonnet-5 | …export GH_TOKEN=«REDACTED:40 chars»… |
+```
+
+A secret in a trajectory step is a secret that was in the context window, so the report names
+the destination: the model, and the endpoint host when the log records it. That is the question
+worth answering, since a local file that never left the machine is a smaller problem than a
+credential handed to a third party.
+
+Secret values never appear in the output: a finding is identified by its keyring label and a
+SHA-256 fingerprint, and the match context is redacted — a report that quoted the secret would
+just be the next leak. Exit status is 1 when something leaked, 0 when nothing did, so it works
+as a cron or pre-commit check.
+
+Coverage is the same store as `search`: every trajectory file plus the SQLite session stores
+(OpenCode, Copilot, Hermes, Codex), scanned as text so nothing hides in a DB page. For
+agentknit sessions the `*_messages.json` payload written beside the journal is scanned too:
+that file is the request as it was posted to the endpoint, so it is the direct evidence of
+what left the machine. Multi-line secrets (PEM keys) are matched on their longest line and
+flagged as partial.
+
+Two things keep the report honest rather than noisy. Keyring values shorter than
+`--min-length` (default 8) are skipped, and a value that turns up in more than `--max-files`
+trajectories (default 25) is listed separately as ordinary text — a dictionary-word password
+matches half the corpus and means nothing. Both are reported as counts, so nothing is dropped
+silently; `--max-files 0` removes the cap. Locked keyring collections are reported as
+unscanned rather than ignored.
 
 ## Memory filesystem
 
@@ -101,6 +177,9 @@ trajectoriz-cli advanced tools --dir /path/to/repo
 shows up as an [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) JSON
 file — so any tool that reads files (grep, an agent's own file tools, etc.) can browse past
 sessions directly, without going through this CLI.
+
+The idea behind it:
+[Exposing Past Sessions as Memory for Coding Agents](https://www.monperrus.net/martin/memory-for-coding-agents).
 
 ```bash
 pip install trajectoriz[fuse]   # requires libfuse (Linux) or macFUSE (macOS)
@@ -110,23 +189,48 @@ trajectoriz-cli memory ~/mnt/traj-memory        # or mount elsewhere
 trajectoriz-cli memory --foreground             # or run attached
 
 ls memory
+cat memory/README.md                            # what the directory is, in the directory
 cat memory/2026-05-15_claude_cl-4d72f7b5.atif.json
 
-fusermount -u memory                            # unmount (umount on macOS)
+trajectoriz-cli memory --unmount                # unmount (or: fusermount -u memory)
 ```
 
 Use `--dir PATH` to expose a different repo's trajectories instead of the current directory's.
-The listing is recomputed on every access, so new sessions appear without remounting. If the
-mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
+If the mountpoint sits inside a git repo, it's added to that repo's `.gitignore` automatically.
 
-## Features
+The mount is built for tools that walk and read files: one store scan serves the whole
+directory listing (refreshed every couple of seconds, so new sessions still show up), each
+trajectory's ATIF payload is rendered once per open and then served from memory, and a file's
+size is memoized on disk so `ls -l`, `find` and git can stat the whole directory without
+rendering anything. Reading every file in a mount of 30 trajectories takes ~0.1s.
 
-- **Full-content search** — three backends (grep / sqlite / recoll); space-separated words are AND, `\|` is OR; matches at step level across message, tool calls, and results
-- **Unified record API** — iterate and parse sessions from Claude Code, Codex, Copilot, OpenCode, Hermes and more through a single `iter_records()` / `parse_record()` interface
-- **Blame** — trace every agent edit to a file across all trajectory sources, with line/char deltas
-- **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
-- **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
-- **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
+Two rules keep the mount from taking the machine with it if something goes wrong:
+
+- **Store scans never descend into a FUSE mount.** They would otherwise: `~/.local/share/agent_probe`
+  is commonly a symlink into a repo, and that repo can hold a memory mount of its own — so a
+  daemon would end up sending itself a request from inside a request.
+- **No request waits without a deadline.** The kernel holds a mount's inode lock while a
+  handler runs, so a handler that blocks forever leaves every process that touches the
+  directory in uninterruptible sleep — `D` state, which SIGKILL cannot end. A scan runs off
+  the request path and a request waits at most 10s for it, serving the previous listing after
+  that.
+
+If a mount ever stops responding — a killed or wedged daemon leaves the mountpoint attached but
+unserviced, which hangs anything that walks the tree it sits in — recover it with:
+
+```bash
+trajectoriz-cli memory --unmount ./memory       # unmounts lazily, and aborts the
+                                                # FUSE connection if it is wedged,
+                                                # which is what frees processes
+                                                # already stuck on it
+```
+
+To clear several at once — or a mount left over from an older version —
+`scripts/fuse-abort.sh` lists every FUSE connection with the mount it serves and
+the number of requests stuck on it, and aborts the bricked ones. It is a dry run
+until passed `--go`, and never touches connections matching `$KEEP` (portals,
+gvfs, AppImages, sshfs and friends), because aborting a healthy connection breaks
+whatever uses it.
 
 ## Python API
 
