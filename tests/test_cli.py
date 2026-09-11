@@ -596,3 +596,39 @@ def test_search_still_accepts_the_old_fast_flag(tmp_path, monkeypatch, capsys):
     cli.cmd_search(_search_args(query="fix the bug", fast=True))
 
     assert "cl-abc" in capsys.readouterr().out
+
+
+def _reindex_args(**overrides):
+    import argparse
+
+    defaults = dict(dir=None, local=False)
+    defaults.update(overrides)
+    return argparse.Namespace(**defaults)
+
+
+def test_cmd_reindex_dir_indexes_only_local_records(tmp_path, monkeypatch, capsys):
+    import trajectoriz._fts as fts
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli.tz, "iter_local_records", lambda cwd: [rec])
+    monkeypatch.setattr(cli.tz, "iter_all_records", lambda: pytest.fail("must not index all"))
+    monkeypatch.setattr(fts, "fts_db_path", lambda cache_dir=None: tmp_path / "fts.db")
+
+    cli.cmd_reindex(_reindex_args(dir=str(tmp_path)))
+
+    out = capsys.readouterr().out
+    assert "indexed" in out
+    matches = fts.search_fts([["sonnet"]], db_path=tmp_path / "fts.db")
+    assert any(m[0].id == "cl-abc" for m in matches)
+
+
+def test_cmd_reindex_help_registered(monkeypatch, capsys):
+    monkeypatch.setattr(cli.sys, "argv", ["trajectoriz-cli", "reindex", "--help"])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "--local" in out and "--dir" in out
+

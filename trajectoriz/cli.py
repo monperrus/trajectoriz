@@ -1034,6 +1034,29 @@ def _recoll_topdirs() -> list[str]:
     return dirs
 
 
+def _sqlite_refresh(records, db_path, stream=None) -> None:
+    """Incrementally rebuild the SQLite FTS index over the given records."""
+    from trajectoriz._fts import build_index
+
+    stream = stream or sys.stdout
+    print(f"sqlite: building FTS index at {db_path}", file=stream)
+    indexed, skipped = build_index(records, db_path=db_path)
+    print(f"sqlite: {indexed} indexed, {skipped} skipped (up to date)", file=stream)
+
+
+def cmd_reindex(args) -> None:
+    """Incrementally update the SQLite FTS index (recoll is intentionally left out)."""
+    from trajectoriz._fts import fts_db_path
+
+    db_path = fts_db_path()
+    if args.dir:
+        _sqlite_refresh(tz.iter_local_records(args.dir), db_path)
+    elif args.local:
+        _sqlite_refresh(tz.iter_local_records(os.getcwd()), db_path)
+    else:
+        _sqlite_refresh(tz.iter_all_records(), db_path)
+
+
 def cmd_refresh(args) -> None:
     """Install recoll config to ~/.recoll-trajectories/ and run recollindex."""
     import shutil
@@ -1072,11 +1095,8 @@ def cmd_refresh(args) -> None:
                 sys.exit(result.returncode)
 
         if not args.no_sqlite:
-            from trajectoriz._fts import build_index, fts_db_path
-            db_path = fts_db_path()
-            print(f"sqlite: building FTS index at {db_path}")
-            indexed, skipped = build_index(tz.iter_all_records(), db_path=db_path)
-            print(f"sqlite: {indexed} indexed, {skipped} skipped (up to date)")
+            from trajectoriz._fts import fts_db_path
+            _sqlite_refresh(tz.iter_all_records(), fts_db_path())
 
         print("Done.")
     else:
@@ -1682,6 +1702,21 @@ def main() -> None:
         help="Skip SQLite FTS indexing (only run recollindex).",
     )
     p_refresh.set_defaults(func=cmd_refresh)
+
+    # reindex
+    p_reindex = sub.add_parser(
+        "reindex",
+        help="Incrementally update the SQLite FTS index (recoll is not touched).",
+    )
+    p_reindex.add_argument(
+        "--local", action="store_true",
+        help="Only index trajectories of the current directory (default: all).",
+    )
+    p_reindex.add_argument(
+        "--dir", metavar="PATH",
+        help="Only index trajectories of this directory.",
+    )
+    p_reindex.set_defaults(func=cmd_reindex)
 
     if len(sys.argv) == 1:
         parser.print_help()

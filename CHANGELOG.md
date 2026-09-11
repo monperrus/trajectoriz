@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `trajectoriz-cli reindex` incrementally updates the SQLite FTS index without
+  touching recoll, with `--local` / `--dir PATH` to scope the rebuild to one
+  folder — fast enough to run at agent startup.
+
 - Public source-agnostic record parsing API via `TrajectoryRecord`, `iter_records()`,
   `iter_all_records()`, `iter_local_records()`, and `parse_record()`.
 - `trajectoriz.atif` module translating parsed trajectories (Claude Code, Codex,
