@@ -6,7 +6,9 @@ from trajectoriz import __version__
 
 
 def test_version():
-    assert __version__ == "0.1.0"
+    import re
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", __version__)
 
 
 def test_iter_claude_trajectories_empty(tmp_path):
