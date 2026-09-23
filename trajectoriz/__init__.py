@@ -588,6 +588,12 @@ def get_cwd_from_trajectory(jsonl_path) -> str:
                     val = d.get(key)
                     if val and isinstance(val, str):
                         return val
+                # Copilot CLI nests it in session.start: data.context.cwd.
+                data = d.get("data")
+                context = data.get("context") if isinstance(data, dict) else None
+                val = context.get("cwd") if isinstance(context, dict) else None
+                if val and isinstance(val, str):
+                    return val
     except OSError:
         pass
     return ""
@@ -745,7 +751,7 @@ def _preload_probes() -> None:
     """Bulk-load the compact cached probes before a scan reads them per file."""
     from ._scancache import preload
 
-    preload("fmt", "cwd")
+    preload("fmt", _CWD_PROBE)
 
 
 def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
@@ -757,9 +763,14 @@ def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
     return ts, msg
 
 
+# Bumped whenever get_cwd_from_trajectory learns a new layout: results cached
+# under the old kind are keyed by an unchanged mtime and would never refresh.
+_CWD_PROBE = "cwd_r2"
+
+
 def _scan_cwd(path) -> str:
     """Return the working directory recorded in path, cached across scans."""
-    return _memo(path, "cwd", lambda: get_cwd_from_trajectory(path))
+    return _memo(path, _CWD_PROBE, lambda: get_cwd_from_trajectory(path))
 
 
 def _scan_fmt(path) -> str | None:
@@ -814,8 +825,33 @@ def _iter_extra_folder_records(cwd: str | None = None):
         yield TrajectoryRecord(_short_id(fmt[:2], str(p)), fmt, ts, msg, p)
 
 
+def _mirror_key(path: Path) -> tuple[str, ...]:
+    """Key a session file by its last two path parts.
+
+    Backups in extra folders mirror the live stores under a different root
+    (``<project>/<uuid>.jsonl``, ``<session-id>/events.jsonl``,
+    ``<date>/<file>.jsonl``), so this tail identifies the same session in both.
+    """
+    return path.parts[-2:]
+
+
 def iter_local_records(cwd: str):
-    """Yield trajectory records whose working directory is cwd or a subdirectory."""
+    """Yield trajectory records whose working directory is cwd or a subdirectory.
+
+    Extra-folder copies of a session also present in a live store are skipped.
+    """
+    live: set[tuple[str, ...]] = set()
+    for rec in _iter_live_local_records(cwd):
+        if isinstance(rec.source, Path):
+            live.add(_mirror_key(rec.source))
+        yield rec
+    for rec in _iter_extra_folder_records(cwd):
+        if isinstance(rec.source, Path) and _mirror_key(rec.source) in live:
+            continue
+        yield rec
+
+
+def _iter_live_local_records(cwd: str):
     _preload_probes()
     for p in iter_claude_project_trajectories(cwd):
         ts, msg = _scan_first_msg(p, "claude")
@@ -875,8 +911,6 @@ def iter_local_records(cwd: str):
                 sess.first_user_message or "",
                 {"type": "hermes", "session_id": sess.id, "model": sess.model, "cwd": sess.cwd},
             )
-
-    yield from _iter_extra_folder_records(cwd)
 
 
 def iter_all_records():

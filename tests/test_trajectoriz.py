@@ -391,6 +391,21 @@ def test_get_cwd_from_trajectory(tmp_path):
     assert get_cwd_from_trajectory(f) == "/home/user/repo"
 
 
+def test_get_cwd_from_trajectory_copilot_session_start(tmp_path):
+    import json
+
+    from trajectoriz import get_cwd_from_trajectory
+
+    f = tmp_path / "events.jsonl"
+    f.write_text(
+        json.dumps({
+            "type": "session.start",
+            "data": {"sessionId": "s1", "context": {"cwd": "/home/user/repo"}},
+        }) + "\n"
+    )
+    assert get_cwd_from_trajectory(f) == "/home/user/repo"
+
+
 def test_get_cwd_from_trajectory_missing(tmp_path):
     from trajectoriz import get_cwd_from_trajectory
 
@@ -752,3 +767,21 @@ def test_parse_copilot_event_trajectory_total_tokens(tmp_path):
     traj = parse_copilot_event_trajectory(f)
     assert traj.total_prompt_tokens == 0
     assert traj.total_tokens == estimate_tokens("fix the bug") + estimate_tokens("fixed it")
+
+
+def test_iter_local_records_skips_backup_copy_of_live_session(tmp_path, monkeypatch):
+    import trajectoriz as tz
+    from trajectoriz import TrajectoryRecord
+
+    live = tmp_path / "live" / "session-state" / "s1" / "events.jsonl"
+    backup = tmp_path / "backup" / "copilot" / "session-state" / "s1" / "events.jsonl"
+    only_backup = tmp_path / "backup" / "copilot" / "session-state" / "s0" / "events.jsonl"
+
+    def rec(p):
+        return TrajectoryRecord(str(p), "copilot", "2026-01-01T00:00:00Z", "hi", p)
+
+    monkeypatch.setattr(tz, "_iter_live_local_records", lambda cwd: iter([rec(live)]))
+    monkeypatch.setattr(
+        tz, "_iter_extra_folder_records", lambda cwd: iter([rec(backup), rec(only_backup)])
+    )
+    assert [r.source for r in tz.iter_local_records("/repo")] == [live, only_backup]
