@@ -651,6 +651,8 @@ def test_parse_agentknit_journal(tmp_path):
     assert traj.total_tool_calls == 1
     # Wire arguments arrive JSON-encoded; they must be usable as a dict.
     assert traj.steps[1]["tool_calls"][0]["arguments"]["command"].startswith("secret-tool")
+    # Each tool call carries its own timestamp (HH:MM browsing aid).
+    assert traj.steps[1]["tool_calls"][0]["ts"] == "2026-09-04T13:18:25"
     assert "s3cr3t-value" in traj.steps[1]["observation"]["results"][0]["content"]
     assert traj.steps[2]["message"] == "Got the key."
 

@@ -4,7 +4,7 @@ __version__ = "0.9999.0"
 
 # Bump whenever a parser reads more of a trajectory than it used to: the
 # on-disk parse cache is keyed by it, so a stale entry can never mask a fix.
-PARSER_REVISION = 2
+PARSER_REVISION = 3
 
 import fnmatch
 import json
@@ -1870,6 +1870,9 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
                 "tool_call_id": "",
                 "function_name": entry.get("name", ""),
                 "arguments": entry.get("args") or {},
+                # Local clock time of the call (HH:MM), for browsing; the
+                # full instant lives in the enclosing step's timestamp.
+                "ts": ts,
             })
             total_tool_calls += 1
 
@@ -1933,6 +1936,10 @@ def parse_agent_probe_trajectory(jsonl_path: Path, fallback_timestamp: str = "")
                             "arguments": _parse_tool_arguments(
                                 (call.get("function") or {}).get("arguments")
                             ),
+                            # Local clock time of the call (HH:MM), for
+                            # browsing; the full instant lives in the
+                            # enclosing step's timestamp.
+                            "ts": ts,
                         }
                         for call in calls
                         if isinstance(call, dict)
