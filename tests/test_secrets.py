@@ -1,7 +1,9 @@
 """Tests for keyring-secret leak detection (_secrets.py)."""
 from __future__ import annotations
 
+import datetime
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -9,7 +11,6 @@ import pytest
 
 import trajectoriz as tz
 from trajectoriz import _secrets
-
 
 TOKEN = "ghp_9Zq3kLmN7pR2sT4vW6xY8aB0cD1eF3gH5i"
 PASSPHRASE = "correct horse battery staple 42"
@@ -415,3 +416,55 @@ def test_locked_collections_and_binary_items_are_surfaced(traj, use_grep):
     summary = _secrets.leaks_to_json(result)["summary"]
     assert summary["locked_collections"] == ["Vault"]
     assert summary["skipped_binary"] == 3
+
+
+# ── date filter ──────────────────────────────────────────────────────────────
+
+
+def test_record_date_handles_iso_epoch_and_mtime(tmp_path):
+    iso = tz.TrajectoryRecord(id="a", agent="claude", timestamp="2026-03-01T10:00:00Z",
+                              first_msg="", source=None)
+    ms = tz.TrajectoryRecord(id="b", agent="opencode", timestamp="1772000000000",
+                             first_msg="", source={})
+    path = tmp_path / "x.jsonl"
+    path.write_text("")
+    os.utime(path, (1772000000, 1772000000))
+    undated_file = tz.TrajectoryRecord(id="c", agent="agent_probe", timestamp="",
+                                       first_msg="", source=path)
+    undated = tz.TrajectoryRecord(id="d", agent="x", timestamp="", first_msg="", source=None)
+    day = datetime.datetime.fromtimestamp(1772000000).strftime("%Y-%m-%d")
+    assert _secrets.record_date(iso) == "2026-03-01"
+    assert _secrets.record_date(ms) == day
+    assert _secrets.record_date(undated_file) == day
+    assert _secrets.record_date(undated) is None
+
+
+def test_date_filter_restricts_trajectory_files(traj, use_grep):
+    _write_claude_traj(traj, "hi", f"token={TOKEN}")
+    record = _record(traj)
+    scan = lambda **kw: _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep,
+                                      store_dbs=[], **kw)
+    assert len(scan(since="2026-03-01").leaks) == 1
+    assert len(scan(since="2026-03-01", until="2026-03-01").leaks) == 1
+    assert scan(since="2026-03-02").leaks == []
+    assert scan(until="2026-02-28").leaks == []
+
+
+def test_date_filter_drops_store_hits_outside_the_period(tmp_path, use_grep):
+    store = tmp_path / "opencode.db"
+    _make_store(store, f"the token is {TOKEN}")
+    record = tz.TrajectoryRecord(
+        id="oc-abcd1234", agent="opencode", timestamp="2026-03-01T10:00:00Z",
+        first_msg="hi", source={"type": "opencode", "session_id": "sess-1"},
+    )
+    scan = lambda **kw: _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep,
+                                      store_dbs=[store], **kw)
+    assert len(scan(since="2026-03-01").leaks) == 1
+    assert scan(since="2026-03-02").leaks == []
+
+
+def test_date_filter_counts_undated_trajectories(traj, use_grep):
+    record = tz.TrajectoryRecord(id="u", agent="x", timestamp="", first_msg="", source=None)
+    result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[],
+                           since="2026-01-01")
+    assert result.skipped_undated == 1

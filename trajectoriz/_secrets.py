@@ -11,6 +11,7 @@ leaked secret into a scan report would just create the next leak.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import re
@@ -112,6 +113,7 @@ class ScanResult:
     files_scanned: int = 0
     bytes_scanned: int = 0
     unattributed: int = 0
+    skipped_undated: int = 0
 
 
 # --------------------------------------------------------------------------- #
@@ -188,6 +190,27 @@ def _record_path(record) -> Path | None:
         rollout = source.get("rollout_path")
         if rollout:
             return Path(rollout)
+    return None
+
+
+def record_date(record) -> str | None:
+    """The record's day as YYYY-MM-DD, or None when it cannot be dated.
+
+    Timestamps are ISO strings for most agents but epoch seconds or
+    milliseconds for the SQLite-backed ones; a record without any timestamp
+    (agent_probe journals) is dated by its file's mtime.
+    """
+    ts = (record.timestamp or "").strip()
+    if re.match(r"\d{4}-\d\d-\d\d", ts):
+        return ts[:10]
+    if re.fullmatch(r"\d+(\.\d+)?", ts):
+        seconds = float(ts)
+        if seconds > 1e11:  # milliseconds
+            seconds /= 1000
+        return datetime.datetime.fromtimestamp(seconds).strftime("%Y-%m-%d")
+    path = _record_path(record)
+    if path is not None and path.exists():
+        return datetime.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
     return None
 
 
@@ -579,8 +602,14 @@ def scan(
     locked_collections: Sequence[str] = (),
     skipped_binary: int = 0,
     store_dbs: Sequence[Path] | None = None,
+    since: str | None = None,
+    until: str | None = None,
 ) -> ScanResult:
-    """Search every trajectory for every keyring secret."""
+    """Search every trajectory for every keyring secret.
+
+    ``since``/``until`` (inclusive YYYY-MM-DD) restrict the scan to trajectories
+    of that period; undated ones are then skipped and counted.
+    """
     secrets = list(secrets)
     result = ScanResult(
         secrets_total=len(secrets),
@@ -611,15 +640,27 @@ def scan(
         )
 
     records = list(records)
+    # Store DBs hold every session at once: attribute their hits against all
+    # records, then drop the ones outside the period.
+    all_records = records
+    if since or until:
+        records = []
+        for record in all_records:
+            day = record_date(record)
+            if day is None:
+                result.skipped_undated += 1
+            elif (not since or day >= since) and (not until or day <= until):
+                records.append(record)
+    in_period = {r.id for r in records}
     by_path, stores = collect_targets(records, store_dbs)
     sessions = {
         str(r.source.get("session_id")): (r.agent, r.id, r.timestamp)
-        for r in records
+        for r in all_records
         if isinstance(r.source, dict) and r.source.get("session_id") is not None
     }
     db_models = {
         r.id: str(r.source.get("model") or "")
-        for r in records
+        for r in all_records
         if isinstance(r.source, dict) and r.source.get("model")
     }
 
@@ -665,7 +706,10 @@ def scan(
             result.unattributed += unattributed
 
     for path, present in stores_to_inspect.items():
-        result.leaks += _leaks_for_store(path, present, sessions, db_models)
+        store_leaks = _leaks_for_store(path, present, sessions, db_models)
+        if since or until:
+            store_leaks = [leak for leak in store_leaks if leak.trajectory_id in in_period]
+        result.leaks += store_leaks
 
     result.leaks.sort(key=lambda leak: (leak.labels, leak.timestamp, leak.trajectory_id))
     result.too_common.sort(key=lambda common: -common.files)
@@ -690,6 +734,7 @@ def leaks_to_json(result: ScanResult) -> dict:
             ),
             "too_common": len(result.too_common),
             "unattributed_to_a_step": result.unattributed,
+            "skipped_undated": result.skipped_undated,
         },
         "too_common": [
             {

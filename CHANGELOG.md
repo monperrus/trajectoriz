@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `trajectoriz-cli secrets --since/--until/--date YYYY-MM-DD` restricts the scan
+  to trajectories of that period (epoch timestamps and timestamp-less journals
+  are dated too).
 - `trajectoriz-cli reindex` incrementally updates the SQLite FTS index without
   touching recoll, with `--local` / `--dir PATH` to scope the rebuild to one
   folder — fast enough to run at agent startup.

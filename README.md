@@ -112,6 +112,7 @@ pattern heuristics here — every keyring value is searched for verbatim.
 ```bash
 trajectoriz-cli secrets                     # scan every local trajectory
 trajectoriz-cli secrets --dir /path/to/repo # only this repo's trajectories
+trajectoriz-cli secrets --since 2026-09-01  # only recent trajectories (also --until, --date)
 trajectoriz-cli secrets --group-by trajectory
 trajectoriz-cli secrets --json
 ```

@@ -1328,12 +1328,25 @@ def _print_secrets_caveats(result, args, stream) -> None:
                 f"{common.occurrences} occurrences",
                 file=stream,
             )
+    if result.skipped_undated:
+        print(
+            f"\n{result.skipped_undated} trajectory(ies) skipped by the date filter "
+            f"as they carry no date.",
+            file=stream,
+        )
     if result.locked_collections:
         print(
             f"\nWarning: skipped locked keyring collection(s): "
             f"{', '.join(result.locked_collections)}",
             file=stream,
         )
+
+
+def _iso_date(value: str) -> str:
+    """argparse type: a YYYY-MM-DD day, so string comparison orders dates."""
+    if not re.fullmatch(r"\d{4}-\d\d-\d\d", value):
+        raise argparse.ArgumentTypeError(f"expected YYYY-MM-DD, got {value!r}")
+    return value
 
 
 def cmd_secrets(args) -> None:
@@ -1355,6 +1368,8 @@ def cmd_secrets(args) -> None:
         use_grep=not args.no_grep,
         locked_collections=locked,
         skipped_binary=binary,
+        since=args.date or args.since,
+        until=args.date or args.until,
     )
 
     if args.json:
@@ -1660,6 +1675,18 @@ def main() -> None:
     p_secrets.add_argument(
         "--dir", metavar="PATH",
         help="Only scan trajectories of this directory (default: all trajectories).",
+    )
+    p_secrets.add_argument(
+        "--since", metavar="YYYY-MM-DD", type=_iso_date,
+        help="Only scan trajectories on or after this date.",
+    )
+    p_secrets.add_argument(
+        "--until", metavar="YYYY-MM-DD", type=_iso_date,
+        help="Only scan trajectories on or before this date.",
+    )
+    p_secrets.add_argument(
+        "--date", metavar="YYYY-MM-DD", type=_iso_date,
+        help="Only scan trajectories from exactly this date (overrides --since/--until).",
     )
     p_secrets.add_argument(
         "--min-length", type=int, default=8, metavar="N",
