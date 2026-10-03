@@ -50,6 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- agent_probe journals without a user message (most of them: sessions that only
+  hold `session_start`/`session_end`) had an empty timestamp, so they sorted last
+  and were dropped by `list --since/--date`. They are now dated by their first
+  event; the cached probe result is invalidated once.
 - **The memory filesystem could deadlock the whole machine.** Store scans walked
   into FUSE mounts — `~/.local/share/agent_probe` is often a symlink into a repo,
   and that repo can hold a memory mount — so a daemon scanning its stores from

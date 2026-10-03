@@ -518,8 +518,13 @@ def get_first_user_message_copilot(jsonl_path) -> tuple[str, str]:
 
 
 def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
-    """Return (timestamp, first_user_text) from an agent_probe trajectory JSONL."""
+    """Return (timestamp, first_user_text) from an agent_probe trajectory JSONL.
+
+    The timestamp is the first user/task event's, else the journal's first
+    event's (``session_start``): many journals never get a user message.
+    """
     timestamp = ""
+    first_ts = ""
     try:
         with open(Path(jsonl_path), encoding="utf-8") as f:
             for line in f:
@@ -530,6 +535,10 @@ def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
                     d = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(d, dict):
+                    continue
+                if not first_ts:
+                    first_ts = d.get("ts", "") or d.get("timestamp", "")
                 event_type = d.get("type")
                 if event_type == "user":
                     if not timestamp:
@@ -552,10 +561,10 @@ def get_first_user_message_agent_probe(jsonl_path) -> tuple[str, str]:
                     continue
                 text = _extract_content_text(content)
                 if text:
-                    return timestamp, text
+                    return timestamp or first_ts, text
     except OSError:
         pass
-    return timestamp, ""
+    return timestamp or first_ts, ""
 
 
 def get_first_user_message(jsonl_path) -> tuple[str, str]:
@@ -740,6 +749,11 @@ _FIRST_MSG_PROBES = {
     "agent_probe": get_first_user_message_agent_probe,
 }
 
+# Suffix bumped whenever a probe's output changes: cached results are keyed by
+# an unchanged mtime and would never refresh. agent_probe r2 dates journals
+# without a user message by their session_start.
+_FIRST_MSG_REVISIONS = {"agent_probe": ":r2"}
+
 
 def _memo(path, kind: str, compute) -> Any:
     from ._scancache import memo
@@ -759,7 +773,8 @@ def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
     probe = _FIRST_MSG_PROBES.get(fmt)
     if probe is None:
         return "", ""
-    ts, msg = _memo(path, f"first:{fmt}", lambda: list(probe(path)))
+    kind = f"first:{fmt}" + _FIRST_MSG_REVISIONS.get(fmt, "")
+    ts, msg = _memo(path, kind, lambda: list(probe(path)))
     return ts, msg
 
 

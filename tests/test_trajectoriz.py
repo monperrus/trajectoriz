@@ -270,6 +270,20 @@ def test_get_first_user_message_agent_probe_user_type(tmp_path):
     )
     ts, text = get_first_user_message_agent_probe(f)
     assert text == "probe task"
+    assert ts == "2024-01-01T00:00:00Z"
+
+
+def test_get_first_user_message_agent_probe_dated_without_user_message(tmp_path):
+    import json
+
+    from trajectoriz import get_first_user_message_agent_probe
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "session_start", "ts": "2026-08-16T20:13:18"}) + "\n"
+        + json.dumps({"type": "session_end", "ts": "2026-08-16T20:13:19"}) + "\n"
+    )
+    assert get_first_user_message_agent_probe(f) == ("2026-08-16T20:13:18", "")
 
 
 def test_get_first_user_message_dispatcher(tmp_path):
