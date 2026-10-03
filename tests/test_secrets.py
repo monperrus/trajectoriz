@@ -433,10 +433,10 @@ def test_record_date_handles_iso_epoch_and_mtime(tmp_path):
                                        first_msg="", source=path)
     undated = tz.TrajectoryRecord(id="d", agent="x", timestamp="", first_msg="", source=None)
     day = datetime.datetime.fromtimestamp(1772000000).strftime("%Y-%m-%d")
-    assert _secrets.record_date(iso) == "2026-03-01"
-    assert _secrets.record_date(ms) == day
-    assert _secrets.record_date(undated_file) == day
-    assert _secrets.record_date(undated) is None
+    assert tz.record_date(iso) == "2026-03-01"
+    assert tz.record_date(ms) == day
+    assert tz.record_date(undated_file) == day
+    assert tz.record_date(undated) is None
 
 
 def test_date_filter_restricts_trajectory_files(traj, use_grep):

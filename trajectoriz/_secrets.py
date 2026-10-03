@@ -11,7 +11,6 @@ leaked secret into a scan report would just create the next leak.
 
 from __future__ import annotations
 
-import datetime
 import hashlib
 import json
 import re
@@ -190,27 +189,6 @@ def _record_path(record) -> Path | None:
         rollout = source.get("rollout_path")
         if rollout:
             return Path(rollout)
-    return None
-
-
-def record_date(record) -> str | None:
-    """The record's day as YYYY-MM-DD, or None when it cannot be dated.
-
-    Timestamps are ISO strings for most agents but epoch seconds or
-    milliseconds for the SQLite-backed ones; a record without any timestamp
-    (agent_probe journals) is dated by its file's mtime.
-    """
-    ts = (record.timestamp or "").strip()
-    if re.match(r"\d{4}-\d\d-\d\d", ts):
-        return ts[:10]
-    if re.fullmatch(r"\d+(\.\d+)?", ts):
-        seconds = float(ts)
-        if seconds > 1e11:  # milliseconds
-            seconds /= 1000
-        return datetime.datetime.fromtimestamp(seconds).strftime("%Y-%m-%d")
-    path = _record_path(record)
-    if path is not None and path.exists():
-        return datetime.datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
     return None
 
 
@@ -646,7 +624,7 @@ def scan(
     if since or until:
         records = []
         for record in all_records:
-            day = record_date(record)
+            day = tz.record_date(record)
             if day is None:
                 result.skipped_undated += 1
             elif (not since or day >= since) and (not until or day <= until):

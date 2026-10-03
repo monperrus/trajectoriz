@@ -54,6 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hold `session_start`/`session_end`) had an empty timestamp, so they sorted last
   and were dropped by `list --since/--date`. They are now dated by their first
   event; the cached probe result is invalidated once.
+- `list --since/--date`, and the dates shown and sorted on by `list`, `search`,
+  `blame` and `secrets`, now handle epoch timestamps (opencode, codex_db) and
+  date timestamp-less records by file mtime, via the new
+  `normalize_timestamp()`, `record_datetime()` and `record_date()` helpers.
+- `list` hides agent_probe sessions without a user message (empty sessions).
 - **The memory filesystem could deadlock the whole machine.** Store scans walked
   into FUSE mounts — `~/.local/share/agent_probe` is often a symlink into a repo,
   and that repo can hold a memory mount — so a daemon scanning its stores from

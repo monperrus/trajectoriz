@@ -632,3 +632,43 @@ def test_cmd_reindex_help_registered(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "--local" in out and "--dir" in out
 
+
+
+def _list(monkeypatch, capsys, records, **kw):
+    monkeypatch.setattr(cli, "_all_records", lambda: iter(records))
+    args = argparse.Namespace(dir=None, all=True, since=None, date=None, page=1,
+                              page_size=50, last=False)
+    for k, v in kw.items():
+        setattr(args, k, v)
+    cli.cmd_list(args)
+    return capsys.readouterr().out
+
+
+def test_list_hides_agent_probe_sessions_without_user_message(monkeypatch, capsys):
+    from trajectoriz import TrajectoryRecord
+
+    records = [
+        TrajectoryRecord("ap-empty", "agent_probe", "2026-08-16T20:13:18", "", {}),
+        TrajectoryRecord("ap-full", "agent_probe", "2026-08-16T20:14:00", "do it", {}),
+        TrajectoryRecord("cl-empty", "claude", "2026-08-16T20:15:00", "", {}),
+    ]
+    out = _list(monkeypatch, capsys, records)
+    assert "ap-full" in out and "cl-empty" in out
+    assert "ap-empty" not in out
+
+
+def test_list_dates_epoch_timestamps(monkeypatch, capsys):
+    import datetime
+
+    from trajectoriz import TrajectoryRecord
+
+    epoch_ms = 1772000000000
+    day = datetime.datetime.fromtimestamp(epoch_ms / 1000).strftime("%Y-%m-%d")
+    records = [
+        TrajectoryRecord("oc-epoch", "opencode", str(epoch_ms), "hi", {}),
+        TrajectoryRecord("cl-old", "claude", "2020-01-01T00:00:00Z", "old", {}),
+    ]
+    out = _list(monkeypatch, capsys, records, date=day)
+    assert "oc-epoch" in out and day in out and "cl-old" not in out
+    out = _list(monkeypatch, capsys, records, since="2021-01-01")
+    assert "oc-epoch" in out and "cl-old" not in out

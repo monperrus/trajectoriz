@@ -489,7 +489,7 @@ def cmd_blame(args) -> None:
         source = _all_records()
     else:
         source = _local_records(os.getcwd())
-    records = sorted(source, key=lambda r: r.timestamp)  # chronological order
+    records = sorted(source, key=tz.record_datetime)  # chronological order
 
     entries: list[BlameEntry] = []
     for rec in records:
@@ -546,7 +546,7 @@ def cmd_blame(args) -> None:
 
 
 def _record_row(rec: TrajRecord, show_dir: bool = False) -> str:
-    date = rec.timestamp[:10] if rec.timestamp else "—"
+    date = tz.record_date(rec) or "—"
     snippet = (rec.first_msg or "")[:80].replace("|", "\\|").replace("\n", " ")
     if show_dir:
         d = _record_source_dir(rec).replace("|", "\\|")
@@ -561,12 +561,15 @@ def cmd_list(args) -> None:
         source = _all_records()
     else:
         source = _local_records(os.getcwd())
-    records = sorted(source, key=lambda r: r.timestamp, reverse=True)
+    # agent_probe journals with no user message are empty sessions (a client
+    # that opened a session and never used it): noise in a listing.
+    source = (r for r in source if r.first_msg or r.agent != "agent_probe")
+    records = sorted(source, key=tz.record_datetime, reverse=True)
 
     if args.since:
-        records = [r for r in records if r.timestamp[:10] >= args.since]
+        records = [r for r in records if (tz.record_date(r) or "") >= args.since]
     if args.date:
-        records = [r for r in records if r.timestamp[:10] == args.date]
+        records = [r for r in records if tz.record_date(r) == args.date]
 
     if not records:
         print("No trajectories found.")
@@ -644,7 +647,7 @@ def _cmd_search_fast(args, terms: list[list[str]], source: Iterable[TrajRecord])
         or _matches_any(rec.id, terms)
         or _matches_any(rec.agent, terms)
     ]
-    records.sort(key=lambda r: r.timestamp, reverse=True)
+    records.sort(key=tz.record_datetime, reverse=True)
 
     if not records:
         print(
@@ -688,7 +691,7 @@ def _render_search_matches(args, matches) -> None:
     )
     rows = []
     for rec, step_id, snippet in matches:
-        date = rec.timestamp[:10] if rec.timestamp else "—"
+        date = tz.record_date(rec) or "—"
         snippet = snippet.replace("|", "\\|").replace("\n", " ")
         rows.append(f"| `{rec.id}` | {rec.agent} | {date} | {step_id} | {snippet} |")
     page = -1 if args.last else args.page
@@ -968,7 +971,7 @@ def cmd_delete(args) -> None:
             src_info = str(r.source.get("session_id", ""))
         else:
             src_info = ""
-        date = r.timestamp[:10] if r.timestamp else "—"
+        date = tz.record_date(r) or "—"
         print(f"  {r.id}  {r.agent:12s}  {date}  {src_info}")
 
     if not args.yes:
@@ -1417,7 +1420,7 @@ def cmd_secrets(args) -> None:
     if args.group_by == "trajectory":
         keyfn = lambda leak: (leak.agent, leak.trajectory_id)  # noqa: E731
         heading = lambda leak: (  # noqa: E731
-            f"### `{leak.trajectory_id}` ({leak.agent}, {leak.timestamp[:10]}"
+            f"### `{leak.trajectory_id}` ({leak.agent}, {tz.normalize_timestamp(leak.timestamp)[:10]}"
             + (f", sent to {leak.destination}" if leak.destination else "")
             + ")"
         )
@@ -1435,7 +1438,7 @@ def cmd_secrets(args) -> None:
         row = lambda leak: (  # noqa: E731
             leak.agent,
             f"`{leak.trajectory_id}`",
-            leak.timestamp[:10],
+            tz.normalize_timestamp(leak.timestamp)[:10],
             str(leak.step) if leak.step is not None else "—",
             leak.destination or "—",
             leak.context,

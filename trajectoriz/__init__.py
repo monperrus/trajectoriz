@@ -661,6 +661,60 @@ class TrajectoryRecord:
     source: object
 
 
+def normalize_timestamp(ts: str) -> str:
+    """Return ts as an ISO string, converting epoch seconds/milliseconds.
+
+    Most agents record ISO timestamps; the SQLite-backed ones (opencode,
+    codex_db) record epoch numbers, which neither sort nor slice like dates.
+    Returns "" when ts is neither.
+    """
+    import datetime
+
+    ts = (ts or "").strip()
+    if re.match(r"\d{4}-\d\d-\d\d", ts):
+        return ts
+    if re.fullmatch(r"\d+(\.\d+)?", ts):
+        seconds = float(ts)
+        if seconds > 1e11:  # milliseconds
+            seconds /= 1000
+        return datetime.datetime.fromtimestamp(seconds).isoformat(timespec="seconds")
+    return ""
+
+
+def _record_file(record: TrajectoryRecord) -> Path | None:
+    source = record.source
+    if isinstance(source, Path):
+        return source
+    if isinstance(source, dict) and source.get("rollout_path"):
+        return Path(source["rollout_path"])
+    return None
+
+
+def record_datetime(record: TrajectoryRecord) -> str:
+    """Return the record's ISO timestamp, or "" when it cannot be dated.
+
+    Falls back to the trajectory file's mtime for records without a timestamp.
+    """
+    import datetime
+
+    ts = normalize_timestamp(record.timestamp)
+    if ts:
+        return ts
+    path = _record_file(record)
+    try:
+        mtime = path.stat().st_mtime if path is not None else None
+    except OSError:
+        mtime = None
+    if mtime is None:
+        return ""
+    return datetime.datetime.fromtimestamp(mtime).isoformat(timespec="seconds")
+
+
+def record_date(record: TrajectoryRecord) -> str | None:
+    """Return the record's day as YYYY-MM-DD, or None when it cannot be dated."""
+    return record_datetime(record)[:10] or None
+
+
 def _event_summary(event_names: Iterable[object]) -> dict:
     """Return a source-independent summary of a sequence of native events."""
     event_types: list[str] = []

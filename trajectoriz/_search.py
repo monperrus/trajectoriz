@@ -122,7 +122,7 @@ class GrepBackend(SearchBackend):
         records: Iterable[TrajRecord],
         terms: list[list[str]],
     ) -> list[SearchMatch]:
-        sorted_records = sorted(records, key=lambda r: r.timestamp, reverse=True)
+        sorted_records = sorted(records, key=tz.record_datetime, reverse=True)
         flat = [t for clause in terms for t in clause]
         matches: list[SearchMatch] = []
         for rec in sorted_records:
