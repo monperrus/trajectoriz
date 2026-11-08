@@ -240,3 +240,63 @@ def test_sqlite_backend_missing_db_autobuilds(traj_dir, db_path, monkeypatch, ca
     assert len(matches) >= 1
     assert matches[0][0].id == "cl-au"
     assert "building it now" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------- #
+# stale_summary: stale only once an unseen change has waited STALE_AFTER
+# --------------------------------------------------------------------------- #
+
+def _index_with_newest(tmp_path, mtime):
+    import sqlite3
+
+    from trajectoriz import _fts
+
+    path = tmp_path / "fts.db"
+    conn = sqlite3.connect(str(path))
+    _fts._init_schema(conn)
+    conn.execute("INSERT INTO records (traj_id, source_mtime) VALUES ('a', ?)", (mtime,))
+    conn.commit()
+    conn.close()
+    return path
+
+
+DAY = 86400.0
+
+
+@pytest.mark.parametrize(
+    "disk, age, stale",
+    [
+        ([900.0], 2 * DAY, False),  # nothing newer than the index
+        ([1100.0], DAY, False),  # unseen for exactly STALE_AFTER: not yet stale
+        ([1100.0], DAY + 1, True),  # unseen for longer: the refresh stopped
+        ([1100.0, 5 * DAY], DAY + 1, True),  # the oldest unseen change dates the lag
+    ],
+)
+def test_stale_summary(tmp_path, monkeypatch, disk, age, stale):
+    from trajectoriz import _fts
+
+    assert _fts.STALE_AFTER == DAY
+    path = _index_with_newest(tmp_path, 1000.0)
+    monkeypatch.setattr(_fts, "_source_mtimes", lambda: iter(disk))
+    warning = _fts.stale_summary(db_path=path, now=1100.0 + age)
+    assert (warning is not None) is stale
+    if stale:
+        assert "trajectoriz-cli reindex" in warning
+
+
+def test_stale_summary_ignores_sessions_being_written(tmp_path, monkeypatch):
+    """A live session is always newer than the index; alone it is not staleness."""
+    from trajectoriz import _fts
+
+    path = _index_with_newest(tmp_path, 1000.0)
+    now = 1000.0 + 10 * DAY
+    monkeypatch.setattr(_fts, "_source_mtimes", lambda: iter([900.0, now - 5]))
+    assert _fts.stale_summary(db_path=path, now=now) is None
+
+
+def test_stale_summary_empty_index(tmp_path, monkeypatch):
+    from trajectoriz import _fts
+
+    path = _index_with_newest(tmp_path, 0.0)
+    monkeypatch.setattr(_fts, "_source_mtimes", lambda: iter([]))
+    assert _fts.stale_summary(db_path=path, now=1e9) is None

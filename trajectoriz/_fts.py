@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Iterator
 
 import trajectoriz as tz
 
@@ -128,13 +129,20 @@ def build_index(
         conn.close()
 
 
-def _newest_source_mtime() -> float:
-    """Newest mtime across the file-backed trajectory stores (claude, codex,
+# A trajectory modified after the newest indexed one is unseen; the index is
+# stale only once such a change has waited this long (seconds). Sessions being
+# written right now (including the caller's own) are always newer than any
+# index, so "anything unseen" would flag the index as stale permanently. A day
+# matches the daily refresh: stale means the refresh has stopped running.
+STALE_AFTER = 86400
+
+
+def _source_mtimes() -> Iterator[float]:
+    """mtimes across the file-backed trajectory stores (claude, codex,
     copilot, agent_probe), via glob + stat only — no file content is read.
     DB-backed stores (opencode, codex_db, hermes...) have no path to stat and
     are not covered by this signal.
     """
-    newest = 0.0
     for it in (
         tz.iter_claude_trajectories,
         tz.iter_codex_rollout_files,
@@ -143,19 +151,21 @@ def _newest_source_mtime() -> float:
     ):
         for p in it():
             try:
-                newest = max(newest, p.stat().st_mtime)
+                yield p.stat().st_mtime
             except OSError:
                 continue
-    return newest
 
 
-def stale_summary(db_path: Path | None = None) -> str | None:
-    """Return a stderr-ready warning if trajectory files newer than the FTS
-    index exist on disk, else None. Read-only — never touches the index.
+def stale_summary(db_path: Path | None = None, now: float | None = None) -> str | None:
+    """Return a stderr-ready warning if a trajectory changed on disk more than
+    :data:`STALE_AFTER` ago is still unseen by the FTS index, else None.
+    Read-only — never touches the index.
 
-    Cheap by design (glob + stat, no content parsing) so it's safe to run on
-    every search. Best-effort: any failure to read the index (e.g. locked by
-    a concurrent `refresh`) is treated as "can't tell, assume fresh" rather
+    Unseen means modified after the newest ``source_mtime`` in the index; the
+    oldest such change dates how long the index has been lagging. Cheap by
+    design (glob + stat, no content parsing) so it's safe to run on every
+    search. Best-effort: any failure to read the index (e.g. locked by a
+    concurrent `refresh`) is treated as "can't tell, assume fresh" rather
     than raised.
     """
     path = db_path or fts_db_path()
@@ -171,16 +181,17 @@ def stale_summary(db_path: Path | None = None) -> str | None:
         return None
     indexed_newest = row[0] if row and row[0] is not None else 0.0
 
-    disk_newest = _newest_source_mtime()
-    if disk_newest <= indexed_newest:
+    unseen_since = min((m for m in _source_mtimes() if m > indexed_newest), default=None)
+    now = time.time() if now is None else now
+    if unseen_since is None or now - unseen_since <= STALE_AFTER:
         return None
 
     import datetime
-    newest_date = datetime.datetime.fromtimestamp(disk_newest).strftime("%Y-%m-%d")
+    since = datetime.datetime.fromtimestamp(unseen_since).strftime("%Y-%m-%d %H:%M")
     return (
-        f"sqlite: index is stale — newer trajectories exist on disk (as of "
-        f"{newest_date}) that the index hasn't seen. "
-        "Run `trajectoriz-cli refresh` to update."
+        f"sqlite: index is stale — trajectories changed since {since} "
+        f"({(now - unseen_since) / 86400:.1f} days ago) are not indexed. "
+        "Run `trajectoriz-cli reindex` to update."
     )
 
 
