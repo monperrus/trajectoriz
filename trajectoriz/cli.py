@@ -562,7 +562,7 @@ def cmd_list(args) -> None:
         source = _all_records()
     else:
         source = _local_records(os.getcwd())
-    source = (tz.with_compaction_summary(r) for r in source)
+    source = (tz.with_session_summary(r) for r in source)
     # agent_probe journals with no user message are empty sessions (a client
     # that opened a session and never used it): noise in a listing.
     source = (r for r in source if r.first_msg or r.summary or r.agent != "agent_probe")

@@ -259,63 +259,6 @@ def test_get_first_user_message_claude_skips_slash_commands(tmp_path):
     assert get_first_user_message_claude(f) == ("2024-01-01T00:00:00Z", "real next prompt")
 
 
-def test_get_first_user_message_claude_skips_compact_summary(tmp_path):
-    from trajectoriz import get_first_user_message_claude
-
-    f = tmp_path / "session.jsonl"
-    f.write_text(
-        json.dumps({"type": "user", "isCompactSummary": True,
-                    "message": {"content": "Summary:\nold work"}}) + "\n"
-        + json.dumps({"type": "user", "message": {"content": "current task"}}) + "\n"
-    )
-    assert get_first_user_message_claude(f)[1] == "current task"
-
-
-def test_latest_claude_compaction_summary_strips_legacy_preamble(tmp_path):
-    from trajectoriz import TrajectoryRecord, with_compaction_summary
-
-    f = tmp_path / "session.jsonl"
-    f.write_text(
-        json.dumps({"type": "user", "message": {"content":
-            "This session is being continued from a previous conversation that ran out of context. "
-            "The summary below covers the earlier portion of the conversation.\n\n"
-            "Summary:\nfirst recap"}}) + "\n"
-        + json.dumps({"type": "user", "isCompactSummary": True,
-                      "message": {"content": "Summary:\nlatest recap"}}) + "\n"
-    )
-    record = TrajectoryRecord("cl-x", "claude", "", "original task", f)
-    assert with_compaction_summary(record).summary == "Summary:\nlatest recap"
-
-
-def test_codex_compaction_summary_positive_negative_and_encrypted(tmp_path):
-    from trajectoriz import TrajectoryRecord, with_compaction_summary
-
-    plain = tmp_path / "plain.jsonl"
-    plain.write_text(json.dumps({"type": "compacted", "payload": {
-        "message": "", "replacement_history": [
-            {"type": "message", "role": "user",
-             "content": [{"type": "input_text", "text": "task"}]},
-            {"type": "message", "role": "assistant",
-             "content": [{"type": "output_text", "text": "recap of completed work"}]},
-        ]}}) + "\n")
-    record = TrajectoryRecord("cx-plain", "codex", "", "task", plain)
-    assert with_compaction_summary(record).summary == "recap of completed work"
-
-    encrypted = tmp_path / "encrypted.jsonl"
-    encrypted.write_text(json.dumps({"type": "compacted", "payload": {
-        "message": "", "replacement_history": [
-            {"type": "compaction", "encrypted_content": "opaque"},
-        ]}}) + "\n")
-    record = TrajectoryRecord("cx-encrypted", "codex", "", "task", encrypted)
-    assert with_compaction_summary(record).summary == ""
-
-    ordinary = tmp_path / "ordinary.jsonl"
-    ordinary.write_text(json.dumps({"type": "event_msg", "payload": {
-        "type": "user_message", "message": "just a task"}}) + "\n")
-    record = TrajectoryRecord("cx-ordinary", "codex", "", "just a task", ordinary)
-    assert with_compaction_summary(record).summary == ""
-
-
 def test_get_first_user_message_claude_keeps_command_discussion(tmp_path):
     from trajectoriz import get_first_user_message_claude
 

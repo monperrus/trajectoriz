@@ -657,34 +657,98 @@ def test_list_hides_agent_probe_sessions_without_user_message(monkeypatch, capsy
     assert "ap-empty" not in out
 
 
-def test_list_prefers_latest_compaction_summary(monkeypatch, capsys):
+def test_list_prefers_session_summary(monkeypatch, capsys):
     from trajectoriz import TrajectoryRecord
 
     records = [
         TrajectoryRecord("cl-summary", "claude", "2026-11-14T05:38:23",
-                         "original task", {}, "Summary:\nImplemented and verified the fix"),
+                         "original task", {}, "Fix parser support"),
         TrajectoryRecord("cx-prompt", "codex", "2026-11-14T05:39:00",
                          "Fix the CLI", {}),
     ]
     out = _list(monkeypatch, capsys, records)
-    assert "Summary: Implemented and verified the fix" in out
+    assert "Fix parser support" in out
     assert "original task" not in out
     assert "Fix the CLI" in out
     assert "| Summary |" in out
 
 
-def test_list_populates_claude_compaction_summary(monkeypatch, capsys, tmp_path):
+def test_list_extracts_claude_summary_not_compaction(monkeypatch, capsys, tmp_path):
     path = tmp_path / "session.jsonl"
-    path.write_text(json.dumps({
-        "type": "user", "isCompactSummary": True,
-        "message": {"content": "Summary:\nCurrent work is parser support"},
-    }) + "\n")
+    path.write_text(
+        json.dumps({"type": "user", "isCompactSummary": True,
+                    "message": {"content": "old compacted context"}}) + "\n"
+        + json.dumps({"type": "system", "subtype": "away_summary",
+                      "content": "Fixed the parser. Next, run the full suite. "
+                                 "(disable recaps in /config)"}) + "\n"
+    )
     records = [cli.TrajRecord("cl-summary", "claude", "2026-11-14T05:38:23",
                               "original task", path)]
 
     out = _list(monkeypatch, capsys, records)
-    assert "Summary: Current work is parser support" in out
+    assert "Fixed the parser. Next, run the full suite." in out
+    assert "old compacted context" not in out
     assert "original task" not in out
+
+
+def test_list_uses_claude_title_without_recap(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text(json.dumps({"type": "ai-title", "aiTitle": "Fix parser support"}) + "\n")
+    records = [cli.TrajRecord("cl-title", "claude", "2026-11-14T05:38:23",
+                              "original task", path)]
+
+    out = _list(monkeypatch, capsys, records)
+    assert "Fix parser support" in out
+    assert "original task" not in out
+
+
+def test_list_uses_codex_thread_name(monkeypatch, capsys, tmp_path):
+    codex_home = tmp_path / ".codex"
+    rollout = (codex_home / "sessions/2026/11/14/"
+               "rollout-2026-11-14T00-00-00-01a1d873-f94e-7a50-b9cd-152af1c2efbd.jsonl")
+    rollout.parent.mkdir(parents=True)
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps({"id": "01a1d873-f94e-7a50-b9cd-152af1c2efbd",
+                    "thread_name": "Fix parser support"}) + "\n"
+    )
+    monkeypatch.setattr(cli.tz, "_memo", lambda path, kind, compute: compute())
+    record = cli.TrajRecord("cx-summary", "codex", "2026-11-14T05:39:00",
+                            "original task", rollout)
+
+    out = _list(monkeypatch, capsys, [record])
+    assert "Fix parser support" in out
+    assert "original task" not in out
+
+
+def test_codex_name_falls_back_to_state_db(tmp_path):
+    import sqlite3
+    import trajectoriz as tz
+
+    codex_home = tmp_path / ".codex"
+    rollout = (codex_home / "sessions/2026/11/14/"
+               "rollout-2026-11-14T00-00-00-01a1d873-f94e-7a50-b9cd-152af1c2efbd.jsonl")
+    rollout.parent.mkdir(parents=True)
+    conn = sqlite3.connect(codex_home / "state_5.sqlite")
+    conn.execute("CREATE TABLE threads (id TEXT, name TEXT)")
+    conn.execute("INSERT INTO threads VALUES "
+                 "('01a1d873-f94e-7a50-b9cd-152af1c2efbd', 'Name from state DB')")
+    conn.commit()
+    conn.close()
+
+    assert tz._codex_session_summary(rollout) == "Name from state DB"
+
+
+def test_list_ignores_codex_compaction(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "rollout.jsonl"
+    path.write_text(json.dumps({"type": "compacted", "payload": {
+        "message": "old compacted context"}}) + "\n")
+    record = cli.TrajRecord("cx-ordinary", "codex", "2026-11-14T05:39:00",
+                            "original task", path)
+    monkeypatch.setattr(cli.tz, "_scan_codex_name", lambda path: "")
+
+    out = _list(monkeypatch, capsys, [record])
+    assert "original task" in out
+    assert "old compacted context" not in out
 
 
 def test_list_filters_exact_noisy_test_prompt(monkeypatch, capsys):

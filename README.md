@@ -82,10 +82,12 @@ trajectoriz-cli search "openssl handshake" --content --backend recoll
 
 ## CLI
 
-The trajectory list shows the latest LLM compaction recap in its **Summary** column when
-one is readable in the trajectory; otherwise it falls back to the first user message.
-Claude Code writes these recaps as compact-summary user entries. Codex stores some
-compaction state encrypted, in which case only the first message can be shown.
+The trajectory list's **Summary** column shows Claude Code's latest session recap
+(`away_summary`), falling back to its session title, then to the first user message.
+For Codex it uses the native thread name when available. Compaction checkpoints are
+model context, not session summaries, and are not shown in this column. Codex's
+user-facing recaps are generated in temporary threads and are not persisted in the
+source trajectory.
 
 ```bash
 # List trajectories in the current directory
