@@ -43,6 +43,13 @@ trajectoriz-cli search "pytest\|unittest" --content
 trajectoriz-cli search "fix login bug" --local
 ```
 
+Known smoke-test trajectories are hidden from listings, search, statistics and other
+discovery. The first pattern is an exact first message of `Reply with exactly: ok`
+(surrounding whitespace and letter case ignored). A real task that merely quotes that text
+stays visible, and a hidden trajectory remains accessible with `show <id>` or `info <id>`.
+No trajectory file is deleted. Existing full-text indexes are filtered at query time;
+`trajectoriz-cli reindex` also removes their indexed entries.
+
 With `--content`, results are a paginated Markdown table with trajectory ID, agent, date, step number, and a context snippet:
 
 ```

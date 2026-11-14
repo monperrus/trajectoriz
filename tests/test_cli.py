@@ -657,6 +657,91 @@ def test_list_hides_agent_probe_sessions_without_user_message(monkeypatch, capsy
     assert "ap-empty" not in out
 
 
+def test_list_filters_exact_noisy_test_prompt(monkeypatch, capsys):
+    from trajectoriz import TrajectoryRecord
+
+    records = [
+        TrajectoryRecord("cl-noise", "claude", "2026-11-14T05:38:23", "Reply with exactly: ok", {}),
+        TrajectoryRecord("cl-real", "claude", "2026-11-14T05:39:00", "Fix the CLI", {}),
+        TrajectoryRecord("ap-noise", "agent_probe", "2026-11-14T05:40:00", "  reply with exactly: OK\n", {}),
+    ]
+    out = _list(monkeypatch, capsys, records)
+    assert "cl-real" in out
+    assert "cl-noise" not in out and "ap-noise" not in out
+
+
+def test_noisy_test_filter_keeps_real_tasks_quoting_the_prompt():
+    import trajectoriz as tz
+
+    quoted = tz.TrajectoryRecord(
+        "cl-quoted", "claude", "2026-11-14T05:39:00",
+        'Filter smoke tests whose prompt is "Reply with exactly: ok"', {},
+    )
+    assert not tz.is_noisy_test_record(quoted)
+
+
+def test_noisy_test_filter_only_hides_from_discovery(monkeypatch):
+    import trajectoriz as tz
+
+    noise = tz.TrajectoryRecord("cl-noise", "claude", "", "Reply with exactly: ok", {})
+    real = tz.TrajectoryRecord("cl-real", "claude", "", "Fix the CLI", {})
+    assert [r.id for r in tz.iter_visible_records([noise, real])] == ["cl-real"]
+
+    # Raw records remain available for explicit show/info and deletion.
+    monkeypatch.setattr(tz, "iter_all_records", lambda: iter([noise, real]))
+    assert cli._find_record("cl-noise") is noise
+    assert cli._find_record("cl-real") is real
+
+
+def test_reindex_removes_previously_indexed_noisy_test_prompt(tmp_path, monkeypatch):
+    from trajectoriz._fts import build_index
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    noise = cli.TrajRecord(
+        "cl-noise", "claude", "2024-01-01T00:00:00Z", "Reply with exactly: ok", f,
+    )
+    db = tmp_path / "fts.db"
+    # Seed the state left by a version without the noise filter, then reindex.
+    monkeypatch.setattr(cli.tz, "is_noisy_test_record", lambda _record: False)
+    build_index([noise], db_path=db)
+    monkeypatch.undo()
+    import sqlite3
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM records").fetchone()[0] == 1
+    conn.close()
+    build_index([noise], db_path=db, force=True)
+    conn = sqlite3.connect(db)
+    assert conn.execute("SELECT count(*) FROM records").fetchone()[0] == 0
+    assert conn.execute("SELECT count(*) FROM steps_fts").fetchone()[0] == 0
+    conn.close()
+
+
+def test_grep_and_stale_sqlite_search_hide_noisy_test_prompt(tmp_path):
+    import trajectoriz as tz
+    from trajectoriz._fts import search_fts
+    from trajectoriz._search import GrepBackend
+
+    noise = tz.TrajectoryRecord("cl-noise", "claude", "", "Reply with exactly: ok", None)
+    real = tz.TrajectoryRecord("cl-real", "claude", "", "Fix the CLI", None)
+    assert GrepBackend().search([noise, real], [["reply"]]) == []
+
+    import sqlite3
+    db = tmp_path / "stale-fts.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE records (traj_id TEXT PRIMARY KEY, agent TEXT, timestamp TEXT,
+                              first_msg TEXT, source_json TEXT, source_mtime REAL);
+        CREATE VIRTUAL TABLE steps_fts USING fts5(
+            content, traj_id UNINDEXED, step_id UNINDEXED, tokenize='unicode61');
+        INSERT INTO records VALUES ('cl-noise', 'claude', '', 'Reply with exactly: ok', '{}', 0);
+        INSERT INTO steps_fts VALUES ('Reply with exactly: ok', 'cl-noise', 1);
+    """)
+    conn.commit()
+    conn.close()
+    assert search_fts([["reply"]], db_path=db) == []
+
+
 def test_list_dates_epoch_timestamps(monkeypatch, capsys):
     import datetime
 

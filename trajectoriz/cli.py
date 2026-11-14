@@ -32,11 +32,11 @@ TrajRecord = tz.TrajectoryRecord
 
 
 def _all_records() -> Iterator[TrajRecord]:
-    yield from tz.iter_all_records()
+    yield from tz.iter_visible_records(tz.iter_all_records())
 
 
 def _local_records(cwd: str) -> Iterator[TrajRecord]:
-    yield from tz.iter_local_records(cwd)
+    yield from tz.iter_visible_records(tz.iter_local_records(cwd))
 
 
 def _cache_dir(cache_dir=None) -> Path:
@@ -564,6 +564,7 @@ def cmd_list(args) -> None:
     # agent_probe journals with no user message are empty sessions (a client
     # that opened a session and never used it): noise in a listing.
     source = (r for r in source if r.first_msg or r.agent != "agent_probe")
+    source = tz.iter_visible_records(source)
     records = sorted(source, key=tz.record_datetime, reverse=True)
 
     if args.since:
@@ -709,13 +710,16 @@ def _native_id(rec: TrajRecord) -> Optional[str]:
 
 
 def _find_record(target: str) -> Optional[TrajRecord]:
-    """Look up a record by short ID or native ID."""
-    for rec in _all_records():
-        if rec.id == target:
-            return rec
-        native = _native_id(rec)
-        if native and native == target:
-            return rec
+    """Look up a record by ID, including test artefacts hidden from listings."""
+    # _all_records() is the established injectable lookup seam in tests. Raw
+    # records are the fallback for a known test artefact hidden by that seam.
+    for source in (_all_records(), tz.iter_all_records()):
+        for rec in source:
+            if rec.id == target:
+                return rec
+            native = _native_id(rec)
+            if native and native == target:
+                return rec
     return None
 
 
@@ -956,7 +960,9 @@ def cmd_advanced_tools(args) -> None:
 
 def cmd_delete(args) -> None:
     """Delete trajectories that have only one user message matching the given text."""
-    source = _all_records() if args.all else _local_records(os.getcwd())
+    # Deletion is an explicit destructive action, not discovery: retain access
+    # to the test artefacts that list/search hide.
+    source = tz.iter_all_records() if args.all else tz.iter_local_records(os.getcwd())
     matching = [r for r in source if _is_single_message_only(r, args.message)]
 
     if not matching:

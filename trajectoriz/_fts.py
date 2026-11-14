@@ -113,6 +113,13 @@ def build_index(
         _init_schema(conn)
         indexed = skipped = 0
         for rec in records_iter:
+            if tz.is_noisy_test_record(rec):
+                # Delete rather than merely skip: records hidden after an
+                # earlier run must disappear from subsequent searches too.
+                conn.execute("DELETE FROM steps_fts WHERE traj_id = ?", (rec.id,))
+                conn.execute("DELETE FROM records WHERE traj_id = ?", (rec.id,))
+                skipped += 1
+                continue
             mtime = _source_mtime(rec)
             if not force and mtime != 0.0:
                 row = conn.execute(
@@ -266,6 +273,10 @@ def search_fts(
             row["first_msg"],
             source,
         )
+        # A stale index may still contain a trajectory hidden since it was
+        # last refreshed. Filtering here must not depend on reindexing.
+        if tz.is_noisy_test_record(rec):
+            continue
         snippet = _make_snippet(row["content"], flat)
         matches.append((rec, int(row["step_id"]), snippet))
     return matches

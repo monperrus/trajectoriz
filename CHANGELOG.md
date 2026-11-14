@@ -36,6 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Listings, metadata/content search, statistics and other trajectory discovery now hide
+  known automated test artefacts whose complete first message is `Reply with exactly:
+  ok` (surrounding whitespace and letter case ignored). Exact matching preserves real
+  tasks that quote the prompt; explicit `show`/`info` by ID and deletion still work.
+  Stale SQLite and recoll indexes are filtered at query time, and reindexing removes
+  previously indexed artefacts.
 - **`search` now searches first messages, IDs and agents by default** instead of the
   full content of every step; pass `--content` (or `--grep`) for the exhaustive
   search. Locating a session no longer parses trajectories. `--fast` is still

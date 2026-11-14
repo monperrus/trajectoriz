@@ -17,7 +17,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 _excluded_lock = threading.Lock()
 _excluded_dirs: set[str] = set()
@@ -1061,6 +1061,30 @@ def iter_records(cwd: str | None = None):
         yield from iter_all_records()
         return
     yield from iter_local_records(cwd)
+
+
+# Complete opening prompts of automated smoke tests. Match the whole first
+# message, after trimming surrounding whitespace and ignoring case: a real task
+# that quotes one of these strings must remain visible.
+NOISY_TEST_FIRST_MESSAGES = frozenset({
+    "Reply with exactly: ok",
+})
+
+
+def is_noisy_test_record(record: TrajectoryRecord) -> bool:
+    """Whether a record is a known automated smoke-test trajectory.
+
+    This is presentation-time filtering only: the trajectory stays on disk and
+    explicit lookup by ID still works. Exact first-message matching avoids
+    hiding substantive sessions that merely mention a test prompt.
+    """
+    first_msg = (record.first_msg or "").strip().casefold()
+    return first_msg in {message.casefold() for message in NOISY_TEST_FIRST_MESSAGES}
+
+
+def iter_visible_records(records: Iterable[TrajectoryRecord]) -> Iterator[TrajectoryRecord]:
+    """Filter known automated test artefacts out of a record stream."""
+    return (record for record in records if not is_noisy_test_record(record))
 
 
 def _cache_dir(cache_dir=None) -> Path:

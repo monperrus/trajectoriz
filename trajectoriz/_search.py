@@ -126,6 +126,8 @@ class GrepBackend(SearchBackend):
         flat = [t for clause in terms for t in clause]
         matches: list[SearchMatch] = []
         for rec in sorted_records:
+            if tz.is_noisy_test_record(rec):
+                continue
             if _matches_any(rec.first_msg or "", terms):
                 matches.append((rec, 1, _make_snippet(rec.first_msg or "", flat)))
                 continue
@@ -197,6 +199,8 @@ def _search_file(path: Path, terms: list[list[str]]) -> list[SearchMatch]:
     fn = _FIRST_MSG_FNS.get(agent)
     _, first_msg = fn(path) if fn else ("", "")
     rec = TrajRecord(traj_id, agent, ts, first_msg, path)
+    if tz.is_noisy_test_record(rec):
+        return []
 
     flat = [t for clause in terms for t in clause]
     matches: list[SearchMatch] = []
