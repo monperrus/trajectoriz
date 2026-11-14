@@ -463,8 +463,19 @@ def _extract_content_text(content) -> str:
     return ""
 
 
+def _is_claude_slash_command(text: str) -> bool:
+    """Whether text is Claude Code's local slash-command transcript wrapper."""
+    return bool(re.fullmatch(
+        r"<command-name>\s*/[^<]+</command-name>\s*"
+        r"(?:<command-message>.*?</command-message>\s*)?"
+        r"(?:<command-args>.*?</command-args>\s*)?",
+        text,
+        flags=re.DOTALL,
+    ))
+
+
 def get_first_user_message_claude(jsonl_path) -> tuple[str, str]:
-    """Return (timestamp, first_user_text) from a Claude Code trajectory JSONL."""
+    """Return (timestamp, first substantive user text) from a Claude Code JSONL."""
     timestamp = ""
     try:
         with open(Path(jsonl_path), encoding="utf-8") as f:
@@ -486,7 +497,7 @@ def get_first_user_message_claude(jsonl_path) -> tuple[str, str]:
                     if d.get("promptId") in meta_prompt_ids:
                         continue
                     text = _extract_content_text(d.get("message", {}).get("content", ""))
-                    if text:
+                    if text and not _is_claude_slash_command(text):
                         return timestamp, text
     except OSError:
         pass
@@ -804,9 +815,9 @@ _FIRST_MSG_PROBES = {
 }
 
 # Suffix bumped whenever a probe's output changes: cached results are keyed by
-# an unchanged mtime and would never refresh. agent_probe r2 dates journals
-# without a user message by their session_start.
-_FIRST_MSG_REVISIONS = {"agent_probe": ":r2"}
+# an unchanged mtime and would never refresh. Claude r2 skips local slash-command
+# wrappers; agent_probe r2 dates journals without a user message by session_start.
+_FIRST_MSG_REVISIONS = {"claude": ":r2", "agent_probe": ":r2"}
 
 
 def _memo(path, kind: str, compute) -> Any:

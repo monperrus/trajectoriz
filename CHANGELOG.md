@@ -56,6 +56,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Claude Code sessions that open with a local slash-command transcript such as
+  `/clear` now use the next substantive user prompt in lists and metadata search;
+  command-only sessions have an empty first message. Cached probes are invalidated.
 - agent_probe journals without a user message (most of them: sessions that only
   hold `session_start`/`session_end`) had an empty timestamp, so they sorted last
   and were dropped by `list --since/--date`. They are now dated by their first

@@ -244,6 +244,45 @@ def test_get_first_user_message_claude_skips_meta(tmp_path):
     assert text == "real message"
 
 
+def test_get_first_user_message_claude_skips_slash_commands(tmp_path):
+    from trajectoriz import get_first_user_message_claude
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(
+        json.dumps({"type": "user", "timestamp": "2024-01-01T00:00:00Z",
+                    "message": {"content": "<command-name>/clear</command-name>\n"
+                                          "            <command-message>clear</command-message>\n"
+                                          "            <command-args></command-args>"}}) + "\n"
+        + json.dumps({"type": "user", "message": {"content": "real next prompt"}}) + "\n"
+    )
+
+    assert get_first_user_message_claude(f) == ("2024-01-01T00:00:00Z", "real next prompt")
+
+
+def test_get_first_user_message_claude_keeps_command_discussion(tmp_path):
+    from trajectoriz import get_first_user_message_claude
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(json.dumps({
+        "type": "user",
+        "message": {"content": "Why does <command-name>/clear</command-name> appear?"},
+    }) + "\n")
+
+    assert get_first_user_message_claude(f)[1] == "Why does <command-name>/clear</command-name> appear?"
+
+
+def test_get_first_user_message_claude_slash_command_only(tmp_path):
+    from trajectoriz import get_first_user_message_claude
+
+    f = tmp_path / "session.jsonl"
+    f.write_text(json.dumps({
+        "type": "user",
+        "message": {"content": "<command-name>/compact</command-name>"},
+    }) + "\n")
+
+    assert get_first_user_message_claude(f)[1] == ""
+
+
 def test_get_first_user_message_copilot(tmp_path):
     import json
 
