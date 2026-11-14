@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `trajectoriz-cli list` displays the latest readable Claude Code or Codex
+  compaction recap as its summary, falling back to the first user message.
 - `trajectoriz-cli secrets --since/--until/--date YYYY-MM-DD` restricts the scan
   to trajectories of that period (epoch timestamps and timestamp-less journals
   are dated too).

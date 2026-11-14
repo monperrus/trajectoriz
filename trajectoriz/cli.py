@@ -547,7 +547,8 @@ def cmd_blame(args) -> None:
 
 def _record_row(rec: TrajRecord, show_dir: bool = False) -> str:
     date = tz.record_date(rec) or "—"
-    snippet = (rec.first_msg or "")[:80].replace("|", "\\|").replace("\n", " ")
+    text = rec.summary or rec.first_msg or ""
+    snippet = text[:80].replace("|", "\\|").replace("\n", " ")
     if show_dir:
         d = _record_source_dir(rec).replace("|", "\\|")
         return f"| `{rec.id}` | {rec.agent} | {date} | {d} | {snippet} |"
@@ -561,9 +562,10 @@ def cmd_list(args) -> None:
         source = _all_records()
     else:
         source = _local_records(os.getcwd())
+    source = (tz.with_compaction_summary(r) for r in source)
     # agent_probe journals with no user message are empty sessions (a client
     # that opened a session and never used it): noise in a listing.
-    source = (r for r in source if r.first_msg or r.agent != "agent_probe")
+    source = (r for r in source if r.first_msg or r.summary or r.agent != "agent_probe")
     source = tz.iter_visible_records(source)
     records = sorted(source, key=tz.record_datetime, reverse=True)
 
@@ -580,14 +582,14 @@ def cmd_list(args) -> None:
     if args.all and not args.dir:
         header = (
             f"## All trajectories ({len(records)} total)\n\n"
-            "| ID | Agent | Date | Directory | First message |\n"
+            "| ID | Agent | Date | Directory | Summary |\n"
             "|---|---|---|---|---|"
         )
     else:
         search_dir = args.dir if args.dir else os.getcwd()
         header = (
             f"## Trajectories in {search_dir} ({len(records)} total)\n\n"
-            "| ID | Agent | Date | First message |\n"
+            "| ID | Agent | Date | Summary |\n"
             "|---|---|---|---|"
         )
     rows = [_record_row(r, show_dir=show_dir) for r in records]

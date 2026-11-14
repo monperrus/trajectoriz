@@ -474,6 +474,30 @@ def _is_claude_slash_command(text: str) -> bool:
     ))
 
 
+_CLAUDE_COMPACT_PREAMBLE = (
+    "This session is being continued from a previous conversation that ran out of context. "
+    "The summary below covers the earlier portion of the conversation.\n\n"
+)
+
+
+def claude_compaction_summary(entry: dict) -> str:
+    """Return a Claude Code compaction summary, or an empty string.
+
+    Current files set ``isCompactSummary``; older files only have the standard
+    continuation preamble. Keep the actual summary, not that boilerplate.
+    """
+    if entry.get("type") != "user":
+        return ""
+    text = _extract_content_text((entry.get("message") or {}).get("content", ""))
+    if entry.get("isCompactSummary"):
+        if text.startswith(_CLAUDE_COMPACT_PREAMBLE):
+            return text[len(_CLAUDE_COMPACT_PREAMBLE):].strip()
+        return text
+    if text.startswith(_CLAUDE_COMPACT_PREAMBLE):
+        return text[len(_CLAUDE_COMPACT_PREAMBLE):].strip()
+    return ""
+
+
 def get_first_user_message_claude(jsonl_path) -> tuple[str, str]:
     """Return (timestamp, first substantive user text) from a Claude Code JSONL."""
     timestamp = ""
@@ -494,7 +518,7 @@ def get_first_user_message_claude(jsonl_path) -> tuple[str, str]:
                     meta_prompt_ids.add(d.get("promptId", ""))
                     continue
                 if d.get("type") == "user":
-                    if d.get("promptId") in meta_prompt_ids:
+                    if d.get("promptId") in meta_prompt_ids or claude_compaction_summary(d):
                         continue
                     text = _extract_content_text(d.get("message", {}).get("content", ""))
                     if text and not _is_claude_slash_command(text):
@@ -670,6 +694,9 @@ class TrajectoryRecord:
     timestamp: str
     first_msg: str
     source: object
+    # Latest LLM-generated compaction recap, when the native log contains one.
+    # Empty for uncompact sessions and encrypted/opaque Codex compactions.
+    summary: str = ""
 
 
 def normalize_timestamp(ts: str) -> str:
@@ -815,9 +842,9 @@ _FIRST_MSG_PROBES = {
 }
 
 # Suffix bumped whenever a probe's output changes: cached results are keyed by
-# an unchanged mtime and would never refresh. Claude r2 skips local slash-command
-# wrappers; agent_probe r2 dates journals without a user message by session_start.
-_FIRST_MSG_REVISIONS = {"claude": ":r2", "agent_probe": ":r2"}
+# an unchanged mtime and would never refresh. Claude r3 skips local slash-command
+# wrappers and compaction recaps; agent_probe r2 dates empty journals by session_start.
+_FIRST_MSG_REVISIONS = {"claude": ":r3", "agent_probe": ":r2"}
 
 
 def _memo(path, kind: str, compute) -> Any:
@@ -846,6 +873,95 @@ def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
 # Bumped whenever get_cwd_from_trajectory learns a new layout: results cached
 # under the old kind are keyed by an unchanged mtime and would never refresh.
 _CWD_PROBE = "cwd_r2"
+
+
+def _jsonl_entries(path):
+    """Yield decoded dictionaries from a JSONL file, ignoring damaged lines."""
+    try:
+        with Path(path).open(encoding="utf-8") as fh:
+            for raw in fh:
+                if raw.strip():
+                    try:
+                        entry = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(entry, dict):
+                        yield entry
+    except OSError:
+        return
+
+
+def _claude_latest_summary(path) -> str:
+    summary = ""
+    for entry in _jsonl_entries(path):
+        summary = claude_compaction_summary(entry) or summary
+    return summary
+
+
+def _codex_content_text(content) -> str:
+    """Extract either old ``text`` or newer ``input_text``/``output_text`` parts."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            part.get("text", "")
+            for part in content
+            if isinstance(part, dict)
+            and part.get("type") in ("text", "input_text", "output_text")
+            and isinstance(part.get("text"), str)
+        )
+    return ""
+
+
+def _codex_latest_summary(path) -> str:
+    """Return Codex's latest readable compaction text, if present.
+
+    Modern Codex often stores the actual recap only as ``encrypted_content``;
+    that is deliberately not treated as a summary available to the user.
+    """
+    summary = ""
+    for entry in _jsonl_entries(path):
+        if entry.get("type") != "compacted":
+            continue
+        payload = entry.get("payload") or {}
+        message = payload.get("message", "")
+        if isinstance(message, str) and message.strip():
+            summary = message.strip()
+            continue
+        # Legacy records preserve the compacted messages in cleartext. Their
+        # latest assistant recap is the closest available summary.
+        for item in payload.get("replacement_history") or []:
+            if not isinstance(item, dict) or item.get("type") != "message":
+                continue
+            if item.get("role") != "assistant":
+                continue
+            text = _codex_content_text(item.get("content")).strip()
+            if text:
+                summary = text
+    return summary
+
+
+def _scan_summary(path, fmt: str) -> str:
+    """Return the latest readable LLM compaction recap, cached across scans."""
+    probe = {"claude": _claude_latest_summary, "codex": _codex_latest_summary}.get(fmt)
+    if probe is None:
+        return ""
+    return _memo(path, f"summary:{fmt}:r1", lambda: probe(path))
+
+
+def with_compaction_summary(record: TrajectoryRecord) -> TrajectoryRecord:
+    """Return record with its latest compaction recap populated when available."""
+    if record.summary:
+        return record
+    if isinstance(record.source, Path):
+        summary = _scan_summary(record.source, record.agent)
+    elif isinstance(record.source, dict) and record.source.get("rollout_path"):
+        summary = _scan_summary(Path(record.source["rollout_path"]), "codex")
+    else:
+        summary = ""
+    return record if not summary else TrajectoryRecord(
+        record.id, record.agent, record.timestamp, record.first_msg, record.source, summary
+    )
 
 
 def _scan_cwd(path) -> str:

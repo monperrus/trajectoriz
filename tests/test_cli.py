@@ -657,6 +657,36 @@ def test_list_hides_agent_probe_sessions_without_user_message(monkeypatch, capsy
     assert "ap-empty" not in out
 
 
+def test_list_prefers_latest_compaction_summary(monkeypatch, capsys):
+    from trajectoriz import TrajectoryRecord
+
+    records = [
+        TrajectoryRecord("cl-summary", "claude", "2026-11-14T05:38:23",
+                         "original task", {}, "Summary:\nImplemented and verified the fix"),
+        TrajectoryRecord("cx-prompt", "codex", "2026-11-14T05:39:00",
+                         "Fix the CLI", {}),
+    ]
+    out = _list(monkeypatch, capsys, records)
+    assert "Summary: Implemented and verified the fix" in out
+    assert "original task" not in out
+    assert "Fix the CLI" in out
+    assert "| Summary |" in out
+
+
+def test_list_populates_claude_compaction_summary(monkeypatch, capsys, tmp_path):
+    path = tmp_path / "session.jsonl"
+    path.write_text(json.dumps({
+        "type": "user", "isCompactSummary": True,
+        "message": {"content": "Summary:\nCurrent work is parser support"},
+    }) + "\n")
+    records = [cli.TrajRecord("cl-summary", "claude", "2026-11-14T05:38:23",
+                              "original task", path)]
+
+    out = _list(monkeypatch, capsys, records)
+    assert "Summary: Current work is parser support" in out
+    assert "original task" not in out
+
+
 def test_list_filters_exact_noisy_test_prompt(monkeypatch, capsys):
     from trajectoriz import TrajectoryRecord
 

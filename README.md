@@ -82,6 +82,11 @@ trajectoriz-cli search "openssl handshake" --content --backend recoll
 
 ## CLI
 
+The trajectory list shows the latest LLM compaction recap in its **Summary** column when
+one is readable in the trajectory; otherwise it falls back to the first user message.
+Claude Code writes these recaps as compact-summary user entries. Codex stores some
+compaction state encrypted, in which case only the first message can be shown.
+
 ```bash
 # List trajectories in the current directory
 trajectoriz-cli list
