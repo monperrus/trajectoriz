@@ -785,6 +785,32 @@ def test_parse_copilot_event_trajectory_total_tokens(tmp_path):
     assert traj.total_tokens == estimate_tokens("fix the bug") + estimate_tokens("fixed it")
 
 
+def test_iter_local_records_relative_dir_uses_process_cwd(tmp_path, monkeypatch):
+    import os
+
+    import trajectoriz as tz
+
+    home = tmp_path / "home"
+    project = tmp_path / "project"
+    home.mkdir()
+    project.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(project)
+
+    session_dir = tz.claude_project_dir(os.getcwd())
+    session_dir.mkdir(parents=True)
+    (session_dir / "session.jsonl").write_text(json.dumps({
+        "type": "user",
+        "sessionId": "s1",
+        "timestamp": "2026-11-14T07:00:00Z",
+        "message": {"content": "fix the relative path"},
+    }) + "\n")
+
+    records = list(tz.iter_local_records("."))
+    assert len(records) == 1
+    assert records[0].first_msg == "fix the relative path"
+
+
 def test_iter_local_records_skips_backup_copy_of_live_session(tmp_path, monkeypatch):
     import trajectoriz as tz
     from trajectoriz import TrajectoryRecord

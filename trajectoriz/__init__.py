@@ -907,8 +907,11 @@ def _mirror_key(path: Path) -> tuple[str, ...]:
 def iter_local_records(cwd: str):
     """Yield trajectory records whose working directory is cwd or a subdirectory.
 
-    Extra-folder copies of a session also present in a live store are skipped.
+    A relative directory is interpreted against the process's current working
+    directory, as on the command line. Extra-folder copies of a session also
+    present in a live store are skipped.
     """
+    cwd = os.path.abspath(os.path.expanduser(cwd))
     live: set[tuple[str, ...]] = set()
     for rec in _iter_live_local_records(cwd):
         if isinstance(rec.source, Path):
