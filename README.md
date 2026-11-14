@@ -89,6 +89,9 @@ model context, not session summaries, and are not shown in this column. Codex's
 user-facing recaps are generated in temporary threads and are not persisted in the
 source trajectory.
 
+Commands that accept a trajectory ID also accept any unique prefix of that ID.
+Exact IDs and native agent session IDs retain their existing behavior.
+
 ```bash
 # List trajectories in the current directory
 trajectoriz-cli list

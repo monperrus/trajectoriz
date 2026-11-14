@@ -712,7 +712,13 @@ def _native_id(rec: TrajRecord) -> Optional[str]:
 
 
 def _find_record(target: str) -> Optional[TrajRecord]:
-    """Look up a record by ID, including test artefacts hidden from listings."""
+    """Look up a record by exact ID or unique ID prefix.
+
+    Native agent IDs remain exact-match only: unlike the short public IDs,
+    their prefixes can refer to files without identifying a trajectory.
+    """
+    prefix_matches: dict[str, TrajRecord] = {}
+
     # _all_records() is the established injectable lookup seam in tests. Raw
     # records are the fallback for a known test artefact hidden by that seam.
     for source in (_all_records(), tz.iter_all_records()):
@@ -722,6 +728,11 @@ def _find_record(target: str) -> Optional[TrajRecord]:
             native = _native_id(rec)
             if native and native == target:
                 return rec
+            if rec.id.startswith(target):
+                prefix_matches[rec.id] = rec
+
+    if len(prefix_matches) == 1:
+        return next(iter(prefix_matches.values()))
     return None
 
 

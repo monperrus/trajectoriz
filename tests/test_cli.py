@@ -351,6 +351,34 @@ def test_cmd_search_content_no_match(tmp_path, monkeypatch, capsys):
     assert "No trajectories found" in out
 
 
+# ── trajectory ID lookup ─────────────────────────────────────────────────────
+
+
+def test_find_record_resolves_unique_id_prefix(monkeypatch):
+    rec = cli.TrajRecord("zz-prefix001", "agent_probe", "2026-11-14", "research", object())
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+
+    assert cli._find_record("zz-prefix") is rec
+
+
+def test_find_record_rejects_ambiguous_id_prefix(monkeypatch):
+    records = [
+        cli.TrajRecord("zz-prefix001", "agent_probe", "2026-11-14", "research", object()),
+        cli.TrajRecord("zz-prefix002", "agent_probe", "2026-11-14", "other", object()),
+    ]
+    monkeypatch.setattr(cli, "_all_records", lambda: iter(records))
+
+    assert cli._find_record("zz-prefix") is None
+
+
+def test_find_record_does_not_resolve_native_id_prefix(monkeypatch):
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01", "fix it", object())
+    monkeypatch.setattr(cli, "_all_records", lambda: iter([rec]))
+    monkeypatch.setattr(cli, "_native_id", lambda record: "session-abcdef")
+
+    assert cli._find_record("session-abc") is None
+
+
 # ── cmd_show --step ──────────────────────────────────────────────────────────
 
 
