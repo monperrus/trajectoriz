@@ -399,6 +399,57 @@ def test_cmd_show_step_jumps_to_correct_page(tmp_path, monkeypatch, capsys):
     assert "Step 3" in out
 
 
+# ── cmd_show without an ID (latest local session) ────────────────────────────
+
+
+def test_latest_local_record_picks_most_recent(monkeypatch):
+    older = cli.TrajRecord("cl-old", "claude", "2024-01-01T00:00:00Z", "old", object())
+    newer = cli.TrajRecord("cl-new", "claude", "2024-06-01T00:00:00Z", "new", object())
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([older, newer]))
+
+    assert cli._latest_local_record("/repo") is newer
+
+
+def test_latest_local_record_skips_empty_agent_probe(monkeypatch):
+    empty = cli.TrajRecord("ap-empty", "agent_probe", "2024-06-01T00:00:00Z", "", object())
+    real = cli.TrajRecord("cl-real", "claude", "2024-01-01T00:00:00Z", "real", object())
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([empty, real]))
+
+    assert cli._latest_local_record("/repo") is real
+
+
+def test_latest_local_record_none_when_empty(monkeypatch):
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([]))
+
+    assert cli._latest_local_record("/repo") is None
+
+
+def test_cmd_show_without_id_shows_latest_local(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_cache_dir", lambda _=None: tmp_path / "cache")
+
+    f = tmp_path / "session.jsonl"
+    _write_claude_trajectory(f)
+    rec = cli.TrajRecord("cl-abc", "claude", "2024-01-01T00:00:00Z", "fix the bug", f)
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([rec]))
+
+    args = argparse.Namespace(id=None, page=1, page_size=20, step=None, full=False, last=False)
+    cli.cmd_show(args)
+
+    out = capsys.readouterr().out
+    assert "# Trajectory `cl-abc`" in out
+
+
+def test_cmd_show_without_id_no_local_records(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "_local_records", lambda cwd: iter([]))
+
+    args = argparse.Namespace(id=None, page=1, page_size=20, step=None, full=False, last=False)
+    with pytest.raises(SystemExit):
+        cli.cmd_show(args)
+
+    err = capsys.readouterr().err
+    assert "No trajectories found" in err
+
+
 def _write_claude_trajectory_with_cwd(path, cwd="/home/user/myrepo"):
     """Write a Claude trajectory JSONL that includes a cwd in the first entry."""
     lines = [

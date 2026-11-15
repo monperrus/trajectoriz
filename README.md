@@ -96,6 +96,9 @@ Exact IDs and native agent session IDs retain their existing behavior.
 # List trajectories in the current directory
 trajectoriz-cli list
 
+# Show the most recent trajectory of the current directory
+trajectoriz-cli show
+
 # Show a trajectory (markdown, paginated)
 trajectoriz-cli show cl-1234abcd
 trajectoriz-cli show cl-1234abcd --last         # jump to the last page

@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `trajectoriz-cli show` without an ID shows the most recent trajectory of the
+  current directory, so `show --last` reaches the end of the latest session
+  without a prior `list`.
 - `trajectoriz-cli list` displays native session recaps/titles: Claude Code's
   `away_summary` or title and Codex's thread name, falling back to the first
   user message. Compaction checkpoints are not treated as session summaries.

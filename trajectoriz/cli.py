@@ -736,9 +736,29 @@ def _find_record(target: str) -> Optional[TrajRecord]:
     return None
 
 
+def _latest_local_record(cwd: str) -> Optional[TrajRecord]:
+    """Return the most recent trajectory in cwd, or None when there is none.
+
+    Empty agent_probe sessions (a client that opened a session and never used
+    it) are skipped, matching what `list` shows.
+    """
+    records = (
+        r for r in _local_records(cwd)
+        if r.first_msg or r.summary or r.agent != "agent_probe"
+    )
+    return max(records, key=tz.record_datetime, default=None)
+
+
 def cmd_show(args) -> None:
     target = args.id
-    record = _find_record(target)
+    if target:
+        record = _find_record(target)
+    else:
+        record = _latest_local_record(os.getcwd())
+        if record is None:
+            print(f"No trajectories found in {os.getcwd()}.", file=sys.stderr)
+            sys.exit(1)
+        target = record.id
 
     if record is None:
         print(f"Error: trajectory `{target}` not found.", file=sys.stderr)
@@ -1560,9 +1580,14 @@ def main() -> None:
     # show
     p_show = sub.add_parser(
         "show",
-        help="Show a trajectory in agent-readable markdown.",
+        help="Show a trajectory in agent-readable markdown (defaults to the "
+             "most recent one in the current directory).",
     )
-    p_show.add_argument("id", help="Trajectory ID (from list or search).")
+    p_show.add_argument(
+        "id", nargs="?", default=None,
+        help="Trajectory ID (from list or search). Omit to show the most recent "
+             "trajectory of the current directory.",
+    )
     p_show.add_argument(
         "--page", type=int, default=1, metavar="N",
         help="Page number (default: 1). Increment to scroll.",
