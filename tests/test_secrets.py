@@ -468,3 +468,40 @@ def test_date_filter_counts_undated_trajectories(traj, use_grep):
     result = _secrets.scan([_secret(TOKEN)], [record], use_grep=use_grep, store_dbs=[],
                            since="2026-01-01")
     assert result.skipped_undated == 1
+
+
+def test_not_secret_keyring_items_are_excluded(monkeypatch):
+    import sys
+    import types
+
+    class Item:
+        def __init__(self, label, attrs):
+            self.label, self.attrs = label, attrs
+
+        def get_secret(self):
+            return b"value-" + self.label.encode()
+
+        def get_attributes(self):
+            return self.attrs
+
+        def get_label(self):
+            return self.label
+
+    class Col:
+        def get_label(self):
+            return "login"
+
+        def is_locked(self):
+            return False
+
+        def get_all_items(self):
+            return [
+                Item("real", {}),
+                Item("flagged", {"not-secret": "true"}),
+                Item("other", {"not-secret": "false"}),
+            ]
+
+    fake = types.SimpleNamespace(dbus_init=lambda: None, get_all_collections=lambda c: [Col()])
+    monkeypatch.setitem(sys.modules, "secretstorage", fake)
+    secrets, _, _ = _secrets.iter_keyring_secrets()
+    assert [s.label for s in secrets] == ["real", "other"]

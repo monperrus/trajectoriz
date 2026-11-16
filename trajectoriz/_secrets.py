@@ -120,10 +120,16 @@ class ScanResult:
 # --------------------------------------------------------------------------- #
 
 
+NOT_SECRET_ATTRIBUTE = "not-secret"
+NOT_SECRET_VALUES = frozenset({"true", "1", "yes"})
+
+
 def iter_keyring_secrets() -> tuple[list[KeyringSecret], list[str], int]:
     """Read every unlocked keyring item.
 
     Returns (secrets, locked collection labels, count of undecodable items).
+    Items carrying the attribute ``not-secret`` set to ``true``/``1``/``yes``
+    are placeholders, not credentials, and are left out of the scan.
     """
     try:
         import secretstorage  # pyright: ignore[reportMissingImports]  # optional 'keyring' extra
@@ -151,6 +157,8 @@ def iter_keyring_secrets() -> tuple[list[KeyringSecret], list[str], int]:
                 attributes = item.get_attributes()
                 item_label = item.get_label()
             except Exception:  # pragma: no cover - flaky D-Bus items
+                continue
+            if attributes.get(NOT_SECRET_ATTRIBUTE, "").lower() in NOT_SECRET_VALUES:
                 continue
             try:
                 value = raw.decode("utf-8")
