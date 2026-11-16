@@ -129,6 +129,9 @@ config files and echo tokens into shell commands; all of it is kept forever in t
 store. The keyring is the ground truth of what a secret is, so there are no entropy or
 pattern heuristics here — every keyring value is searched for verbatim.
 
+Placeholders that are not credentials are excluded by giving the keyring item the attribute
+`not-secret=true` (`secretstorage`: `item.set_attributes({**item.get_attributes(), "not-secret": "true"})`).
+
 ```bash
 trajectoriz-cli secrets                     # scan every local trajectory
 trajectoriz-cli secrets --dir /path/to/repo # only this repo's trajectories
