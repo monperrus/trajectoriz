@@ -300,3 +300,49 @@ def test_stale_summary_empty_index(tmp_path, monkeypatch):
     path = _index_with_newest(tmp_path, 0.0)
     monkeypatch.setattr(_fts, "_source_mtimes", lambda: iter([]))
     assert _fts.stale_summary(db_path=path, now=1e9) is None
+
+
+def _hold_write_lock(db: Path, seconds: float):
+    import sqlite3
+    import threading
+
+    conn = sqlite3.connect(str(db), check_same_thread=False)
+    conn.execute("BEGIN IMMEDIATE")
+    timer = threading.Timer(seconds, lambda: (conn.commit(), conn.close()))
+    timer.start()
+    return timer
+
+
+def _one_record(tmp_path):
+    f = tmp_path / "s.jsonl"
+    _write_claude_traj(f, "fix the lock", "deep content")
+    return tz.TrajectoryRecord("cl-lock", "claude", "2024-03-01T10:00:00Z", "fix the lock", f)
+
+
+def test_build_index_waits_for_a_concurrent_writer(tmp_path, monkeypatch):
+    import trajectoriz._fts as fts
+
+    db = tmp_path / "fts.db"
+    build_index([], db_path=db)
+    monkeypatch.setattr(fts, "WRITER_WAIT_SECONDS", 5.0)
+    timer = _hold_write_lock(db, 1.0)
+    try:
+        assert build_index([_one_record(tmp_path)], db_path=db) == (1, 0)
+    finally:
+        timer.join()
+
+
+def test_build_index_still_fails_past_the_wait(tmp_path, monkeypatch):
+    import sqlite3
+
+    import trajectoriz._fts as fts
+
+    db = tmp_path / "fts.db"
+    build_index([], db_path=db)
+    monkeypatch.setattr(fts, "WRITER_WAIT_SECONDS", 0.2)
+    timer = _hold_write_lock(db, 1.5)
+    try:
+        with pytest.raises(sqlite3.OperationalError, match="locked"):
+            build_index([_one_record(tmp_path)], db_path=db)
+    finally:
+        timer.join()

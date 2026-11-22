@@ -9,6 +9,9 @@ from typing import Iterable, Iterator
 
 import trajectoriz as tz
 
+# How long build_index waits for a concurrent writer to commit.
+WRITER_WAIT_SECONDS = 600.0
+
 TrajRecord = tz.TrajectoryRecord
 
 _FTS_DB_NAME = "fts.db"
@@ -108,7 +111,10 @@ def build_index(
     Returns (indexed_count, skipped_count).
     """
     path = db_path or fts_db_path()
-    conn = sqlite3.connect(str(path))
+    # Another refresh (or a first-run search) may hold the write lock for the
+    # whole of its build; wait for it instead of failing with "database is
+    # locked" after sqlite's default 5 s (2026-11-16 cron failure).
+    conn = sqlite3.connect(str(path), timeout=WRITER_WAIT_SECONDS)
     try:
         _init_schema(conn)
         indexed = skipped = 0
