@@ -280,7 +280,7 @@ def test_stale_summary(tmp_path, monkeypatch, disk, age, stale):
     monkeypatch.setattr(_fts, "_source_mtimes", lambda: iter(disk))
     warning = _fts.stale_summary(db_path=path, now=1100.0 + age)
     assert (warning is not None) is stale
-    if stale:
+    if warning is not None:
         assert "trajectoriz-cli reindex" in warning
 
 
