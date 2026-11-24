@@ -1,7 +1,8 @@
 """Find keyring secrets that appear in cleartext inside agent trajectories.
 
-The scan is deliberately literal: every secret stored in the OS keyring is
-searched for, verbatim, in every trajectory the machine keeps. No entropy or
+The scan is deliberately literal: every secret stored in the OS keyring, and
+every NetworkManager connection secret, is searched for, verbatim, in every
+trajectory the machine keeps. No entropy or
 dictionary heuristics decide what counts as a secret -- the keyring already did.
 
 Secret values never leave this module: findings are reported by keyring label
@@ -174,6 +175,75 @@ def iter_keyring_secrets() -> tuple[list[KeyringSecret], list[str], int]:
                 )
             )
     return secrets, locked, binary
+
+
+# NetworkManager keeps connection secrets (Wi-Fi keys, 802.1X and VPN passwords) outside the
+# Secret Service keyring for system-wide connections. The fields below hold a credential.
+_NM_SETTINGS = ("802-11-wireless-security", "802-1x", "vpn", "gsm", "pppoe", "wireguard", "cdma", "adsl")
+_NM_SECRET_FIELD = re.compile(
+    r"^wireguard\.private-key$"  # 802-1x.private-key is a file path, not a secret
+    r"|\.(password|psk|pin|private-key-password|leap-password|wep-key[0-3]|preshared-key)$"
+)
+
+
+def _nm_unescape(value: str) -> str:
+    """Undo nmcli --terse escaping (backslash before ':' and '\\')."""
+    return re.sub(r"\\(.)", r"\1", value)
+
+
+def parse_nmcli_secrets(text: str) -> list[KeyringSecret]:
+    """Secrets from `nmcli --show-secrets --terse con show uuid ...` output.
+
+    Blocks start at ``connection.id``. ``vpn.secrets`` holds ``key = value`` pairs
+    separated by ``, ``; every value becomes its own secret.
+    """
+    secrets: list[KeyringSecret] = []
+    name = "?"
+    for line in text.splitlines():
+        key, sep, raw = line.partition(":")
+        if not sep:
+            continue
+        value = _nm_unescape(raw)
+        if key == "connection.id":
+            name = value
+            continue
+        if key == "vpn.secrets":
+            pairs = [p.partition(" = ") for p in value.split(", ")]
+            found = [(f"vpn.secrets.{k}", v) for k, eq, v in pairs if eq and v]
+        elif _NM_SECRET_FIELD.search(key):
+            found = [(key, value)]
+        else:
+            continue
+        for field_name, secret in found:
+            if secret and secret not in ("--", "<hidden>"):
+                secrets.append(KeyringSecret(
+                    label=f"NetworkManager '{name}' {field_name}",
+                    schema="org.freedesktop.NetworkManager",
+                    collection="NetworkManager",
+                    value=secret,
+                ))
+    return secrets
+
+
+def iter_networkmanager_secrets() -> list[KeyringSecret]:
+    """Every NetworkManager connection secret readable by this user, via one nmcli call.
+
+    Returns [] when nmcli is missing or fails: hosts without NetworkManager scan the keyring only.
+    """
+    try:
+        uuids = subprocess.run(["nmcli", "-t", "-f", "UUID", "con", "show"], capture_output=True,
+                               text=True, timeout=30, check=True).stdout.split()
+        if not uuids:
+            return []
+        args = [a for u in uuids for a in ("uuid", u)]
+        out = subprocess.run(
+            ["nmcli", "--show-secrets", "--terse", "--fields",
+             ",".join(("connection.id", *_NM_SETTINGS)), "con", "show", *args],
+            capture_output=True, text=True, timeout=120, check=False,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return parse_nmcli_secrets(out)
 
 
 def dedupe_secrets(secrets: Iterable[KeyringSecret]) -> dict[str, list[KeyringSecret]]:

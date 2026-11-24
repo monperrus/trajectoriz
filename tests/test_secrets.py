@@ -505,3 +505,38 @@ def test_not_secret_keyring_items_are_excluded(monkeypatch):
     monkeypatch.setitem(sys.modules, "secretstorage", fake)
     secrets, _, _ = _secrets.iter_keyring_secrets()
     assert [s.label for s in secrets] == ["real", "other"]
+
+
+NMCLI_TERSE = """connection.id:Home\\: 5G
+802-11-wireless-security.key-mgmt:wpa-psk
+802-11-wireless-security.psk:hunter2-wifi
+802-11-wireless-security.psk-flags:0 (none)
+802-11-wireless-security.wep-key0:
+connection.id:eduroam
+802-1x.password:edu\\\\pass\\:word
+802-1x.private-key:/home/u/.cert/key.pem
+802-1x.pin:--
+connection.id:work-vpn
+vpn.secrets:password = vpnpass1, Xauth password = vpnpass2
+connection.id:wg0
+wireguard.private-key:wgkey
+"""
+
+
+def test_parse_nmcli_secrets():
+    got = {(s.label, s.value) for s in _secrets.parse_nmcli_secrets(NMCLI_TERSE)}
+    assert got == {
+        ("NetworkManager 'Home: 5G' 802-11-wireless-security.psk", "hunter2-wifi"),  # unescaped ':' in name
+        ("NetworkManager 'eduroam' 802-1x.password", "edu\\pass:word"),  # unescaped value
+        ("NetworkManager 'work-vpn' vpn.secrets.password", "vpnpass1"),
+        ("NetworkManager 'work-vpn' vpn.secrets.Xauth password", "vpnpass2"),
+        ("NetworkManager 'wg0' wireguard.private-key", "wgkey"),
+    }  # known negatives: psk-flags, empty wep-key0, private-key path, '--' pin
+    assert {s.schema for s in _secrets.parse_nmcli_secrets(NMCLI_TERSE)} == {"org.freedesktop.NetworkManager"}
+
+
+def test_networkmanager_missing_is_silent(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("nmcli")
+    monkeypatch.setattr(_secrets.subprocess, "run", boom)
+    assert _secrets.iter_networkmanager_secrets() == []

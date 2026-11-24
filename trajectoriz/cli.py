@@ -1400,6 +1400,8 @@ def cmd_secrets(args) -> None:
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(2)
+    if not args.no_networkmanager:
+        secrets += _secrets.iter_networkmanager_secrets()
 
     records = _local_records(str(Path(args.dir).resolve())) if args.dir else _all_records()
     result = _secrets.scan(
@@ -1714,7 +1716,8 @@ def main() -> None:
         help="Find keyring secrets that appear in cleartext in trajectories.",
         description=(
             "Search every local trajectory for the verbatim value of every secret in "
-            "the OS keyring. Secret values are never printed: findings identify a "
+            "the OS keyring and every NetworkManager connection secret (Wi-Fi keys, "
+            "802.1X and VPN passwords). Secret values are never printed: findings identify a "
             "secret by its keyring label and SHA-256 fingerprint, and match context "
             "is redacted. Exits 1 when at least one secret leaked."
         ),
@@ -1747,6 +1750,11 @@ def main() -> None:
     p_secrets.add_argument(
         "--group-by", choices=("secret", "trajectory"), default="secret",
         help="Group findings by leaked secret (default) or by trajectory.",
+    )
+    p_secrets.add_argument(
+        "--no-networkmanager", action="store_true",
+        help="Search keyring secrets only, not NetworkManager connection secrets "
+             "(Wi-Fi keys, 802.1X and VPN passwords).",
     )
     p_secrets.add_argument(
         "--no-grep", action="store_true",

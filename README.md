@@ -15,7 +15,7 @@ pip install trajectoriz
 - **HTML export** — `trajectoriz-cli show <id> --html` renders a trajectory as a self-contained HTML page
 - **ATIF export** — `trajectoriz.atif` translates parsed trajectories to [ATIF v1.7](https://harborframework.com/docs/agents/trajectory-format) (Claude Code, Codex, Copilot, agentknit, or any `iter_records()`/`parse_record()` result)
 - **Memory filesystem** — `trajectoriz-cli memory <mountpoint>` mounts a read-only FUSE view where every local trajectory is one ATIF JSON file
-- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret, and reports hits redacted, by fingerprint
+- **Leaked-secret scan** — `trajectoriz-cli secrets` searches every trajectory for the verbatim value of every OS keyring secret and NetworkManager connection secret, and reports hits redacted, by fingerprint
 
 ## Search
 
@@ -128,6 +128,11 @@ written in cleartext into an agent trajectory? Agents print environment variable
 config files and echo tokens into shell commands; all of it is kept forever in the trajectory
 store. The keyring is the ground truth of what a secret is, so there are no entropy or
 pattern heuristics here — every keyring value is searched for verbatim.
+
+NetworkManager keeps system-wide connection secrets (Wi-Fi keys, 802.1X and VPN passwords)
+outside the keyring, so they are read too, with one `nmcli --show-secrets` call, and reported
+under labels such as `NetworkManager 'eduroam' 802-1x.password`. `--no-networkmanager`
+skips them; a host without nmcli scans the keyring only.
 
 Placeholders that are not credentials are excluded by giving the keyring item the attribute
 `not-secret=true` (`secretstorage`: `item.set_attributes({**item.get_attributes(), "not-secret": "true"})`).
