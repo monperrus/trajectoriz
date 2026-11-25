@@ -1370,6 +1370,14 @@ def _print_secrets_caveats(result, args, stream) -> None:
                 f"{common.occurrences} occurrences",
                 file=stream,
             )
+    if result.local_copies:
+        print(
+            f"\n{len(result.local_copies)} cleartext copy(ies) of keyring secrets in saved tool "
+            f"outputs (not sent to a model; delete the file or rotate):",
+            file=stream,
+        )
+        for copy in result.local_copies:
+            print(f"  - `{', '.join(copy.labels)}` (fp `{copy.fingerprint}`): {copy.path}", file=stream)
     if result.not_sent:
         print(
             f"\n{len(result.not_sent)} agent_probe hit(s) not counted as leaks: the secret is in the "

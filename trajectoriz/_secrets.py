@@ -29,6 +29,14 @@ DEFAULT_MAX_FILES = 25
 _GREP_CHUNK = 1000
 _READ_CHUNK = 8 << 20
 
+# Folders of full tool outputs that an agent saved instead of showing them whole to the
+# model (agent.py spills oversized results here), and the private copies fetched from other
+# hosts. A secret in them is a cleartext copy on disk, not a leak to a model.
+DEFAULT_LOCAL_COPY_DIRS = (
+    Path.home() / ".cache" / "agent.py" / "tool-outputs",
+    Path.home() / ".local" / "state" / "trajectoriz" / "tool-outputs",
+)
+
 # SQLite stores that back sessions with no trajectory file of their own.
 _STORE_DBS = (
     Path.home() / ".local" / "share" / "opencode" / "opencode.db",
@@ -101,6 +109,16 @@ class CommonMatch:
     occurrences: int
 
 
+@dataclass(frozen=True)
+class LocalCopy:
+    """A keyring secret in cleartext in a saved tool output (see DEFAULT_LOCAL_COPY_DIRS)."""
+
+    fingerprint: str
+    labels: tuple[str, ...]
+    path: str
+    occurrences: int
+
+
 @dataclass
 class ScanResult:
     leaks: list[Leak] = field(default_factory=list)
@@ -117,6 +135,7 @@ class ScanResult:
     # Found in an agent_probe log but absent from the conversation it actually sent
     # (<id>_messages.json): the agent truncated the tool output before the model saw it.
     not_sent: list[Leak] = field(default_factory=list)
+    local_copies: list[LocalCopy] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -714,6 +733,7 @@ def scan(
     store_dbs: Sequence[Path] | None = None,
     since: str | None = None,
     until: str | None = None,
+    local_copy_dirs: Sequence[Path] | None = None,
 ) -> ScanResult:
     """Search every trajectory for every keyring secret.
 
@@ -825,6 +845,19 @@ def scan(
 
     result.leaks.sort(key=lambda leak: (leak.labels, leak.timestamp, leak.trajectory_id))
     result.too_common.sort(key=lambda common: -common.files)
+
+    common = {c.fingerprint for c in result.too_common}
+    copy_files = sorted(
+        f for d in (DEFAULT_LOCAL_COPY_DIRS if local_copy_dirs is None else local_copy_dirs)
+        if d.is_dir() for f in d.rglob("*") if f.is_file()
+    )
+    if copy_files:
+        wanted = [n for n, (sec, _) in by_needle.items() if sec.fingerprint not in common]
+        found = (_grep_matches(copy_files, wanted) if use_grep else None) or _python_matches(copy_files, wanted)
+        for needle, per_file in found.items():
+            secret, labels = by_needle[needle]
+            result.local_copies += [LocalCopy(secret.fingerprint, labels, str(f), n)
+                                    for f, n in sorted(per_file.items())]
     return result
 
 
@@ -848,6 +881,7 @@ def leaks_to_json(result: ScanResult) -> dict:
             "unattributed_to_a_step": result.unattributed,
             "skipped_undated": result.skipped_undated,
             "not_sent": len(result.not_sent),
+            "local_copies": len(result.local_copies),
         },
         "too_common": [
             {
@@ -861,6 +895,11 @@ def leaks_to_json(result: ScanResult) -> dict:
             for common in result.too_common
         ],
         "not_sent": [_leak_json(leak) for leak in result.not_sent],
+        "local_copies": [
+            {"fingerprint": c.fingerprint, "keyring_labels": list(c.labels), "path": c.path,
+             "occurrences": c.occurrences}
+            for c in result.local_copies
+        ],
         "leaks": [
             {
                 "fingerprint": leak.fingerprint,

@@ -140,6 +140,11 @@ disk, a secret absent from it is reported under `not_sent`, not as a leak. A rou
 (`best-effort-*`) is resolved to the backends that served a request after the secret appeared,
 one leak row each (e.g. `k3` via `kimi-k3-completions.py`).
 
+Saved tool outputs (`~/.cache/agent.py/tool-outputs/`, the full results an agent kept on disk
+instead of showing them to the model) and the private copies fetched from other hosts into
+`~/.local/state/trajectoriz/tool-outputs/<host>/` are searched too; hits are reported as
+`local_copies` (cleartext on disk), not as leaks.
+
 Placeholders that are not credentials are excluded by giving the keyring item the attribute
 `not-secret=true` (`secretstorage`: `item.set_attributes({**item.get_attributes(), "not-secret": "true"})`).
 

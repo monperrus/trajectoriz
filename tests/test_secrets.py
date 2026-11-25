@@ -581,3 +581,23 @@ def test_agent_probe_without_sidecar_or_router_is_unchanged(tmp_path):
     assert {l.model for l in sent} == {"k3", "claude-sonnet-5-5"}
     other = _secrets.replace(leak, agent="claude")
     assert _secrets._refine_agent_probe(log, "SECRETVALUE42", [other]) == ([other], [])
+
+
+def test_secret_in_a_saved_tool_output_is_a_local_copy_not_a_leak(tmp_path, use_grep):
+    outputs = tmp_path / "tool-outputs"
+    (outputs / "pellow").mkdir(parents=True)
+    (outputs / "pellow" / "tmpabc.txt").write_text("…\nTOKEN=hunter2-local-copy\n" * 2)
+    (outputs / "clean.txt").write_text("nothing here\n")
+    secret = _secrets.KeyringSecret(label="L", schema="", collection="c", value="hunter2-local-copy")
+    result = _secrets.scan([secret], [], use_grep=use_grep, store_dbs=[], local_copy_dirs=[outputs])
+    assert result.leaks == []
+    assert [(c.fingerprint, Path(c.path).name, c.occurrences) for c in result.local_copies] == [
+        (secret.fingerprint, "tmpabc.txt", 2)]  # known positive; clean.txt is the negative
+    assert _secrets.leaks_to_json(result)["summary"]["local_copies"] == 1
+    assert "hunter2-local-copy" not in json.dumps(_secrets.leaks_to_json(result))
+
+
+def test_missing_local_copy_dir_is_fine(tmp_path, use_grep):
+    secret = _secrets.KeyringSecret(label="L", schema="", collection="c", value="hunter2-local-copy")
+    result = _secrets.scan([secret], [], use_grep=use_grep, store_dbs=[], local_copy_dirs=[tmp_path / "absent"])
+    assert result.local_copies == []
