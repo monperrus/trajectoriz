@@ -540,3 +540,44 @@ def test_networkmanager_missing_is_silent(monkeypatch):
         raise FileNotFoundError("nmcli")
     monkeypatch.setattr(_secrets.subprocess, "run", boom)
     assert _secrets.iter_networkmanager_secrets() == []
+
+
+def _probe_session(tmp_path, sent_text):
+    model_dir = tmp_path / "best-effort-medium"
+    log = model_dir / "2026-10-26" / "142048_abc123.jsonl"
+    log.parent.mkdir(parents=True)
+    usage = lambda m, cmd: json.dumps({"type": "usage", "backend": {"model": m, "backend": cmd}})
+    log.write_text("\n".join([
+        usage("gpt-5.6-terra", "openai-completions.py --model gpt-5.6-terra"),  # before the secret
+        json.dumps({"type": "tool_result", "stdout": "x SECRETVALUE42 y"}),
+        usage("k3", "kimi-k3-completions.py"),
+        usage("claude-sonnet-5-5", "anthropic-completions.py --model claude-sonnet-5-5"),
+        usage("k3", "kimi-k3-completions.py"),
+    ]) + "\n")
+    if sent_text is not None:
+        (model_dir / "abc123_messages.json").write_text(sent_text)
+    leak = _secrets.Leak(fingerprint="f", labels=("L",), schema="", length=14, agent="agent_probe",
+                         trajectory_id="ap-1", timestamp="", step=3, source=str(log),
+                         model="best-effort-medium", endpoint="", occurrences=1, context="", partial=False)
+    return log, leak
+
+
+def test_agent_probe_secret_absent_from_sent_conversation_is_not_a_leak(tmp_path):
+    log, leak = _probe_session(tmp_path, '[{"role": "tool", "content": "x …[omitted] y"}]')
+    assert _secrets._refine_agent_probe(log, "SECRETVALUE42", [leak]) == ([], [leak])
+
+
+def test_agent_probe_router_leak_goes_to_each_backend_after_the_secret(tmp_path):
+    log, leak = _probe_session(tmp_path, '[{"role": "tool", "content": "x SECRETVALUE42 y"}]')
+    sent, not_sent = _secrets._refine_agent_probe(log, "SECRETVALUE42", [leak])
+    assert not_sent == []
+    assert [(l.model, l.endpoint) for l in sent] == [
+        ("k3", "kimi-k3-completions.py"), ("claude-sonnet-5-5", "anthropic-completions.py")]  # not gpt: before
+
+
+def test_agent_probe_without_sidecar_or_router_is_unchanged(tmp_path):
+    log, leak = _probe_session(tmp_path, None)  # mirror copy: no messages file, still attributed
+    sent, _ = _secrets._refine_agent_probe(log, "SECRETVALUE42", [leak])
+    assert {l.model for l in sent} == {"k3", "claude-sonnet-5-5"}
+    other = _secrets.replace(leak, agent="claude")
+    assert _secrets._refine_agent_probe(log, "SECRETVALUE42", [other]) == ([other], [])

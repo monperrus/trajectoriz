@@ -1370,6 +1370,13 @@ def _print_secrets_caveats(result, args, stream) -> None:
                 f"{common.occurrences} occurrences",
                 file=stream,
             )
+    if result.not_sent:
+        print(
+            f"\n{len(result.not_sent)} agent_probe hit(s) not counted as leaks: the secret is in the "
+            f"local log but not in the conversation sent (<id>_messages.json); the tool output was "
+            f"truncated before the model saw it.",
+            file=stream,
+        )
     if result.skipped_undated:
         print(
             f"\n{result.skipped_undated} trajectory(ies) skipped by the date filter "

@@ -134,6 +134,12 @@ outside the keyring, so they are read too, with one `nmcli --show-secrets` call,
 under labels such as `NetworkManager 'eduroam' 802-1x.password`. `--no-networkmanager`
 skips them; a host without nmcli scans the keyring only.
 
+agent_probe logs keep every tool output whole, while the model may have seen only a
+truncated version. When the session's sent conversation (`<model>/<id>_messages.json`) is on
+disk, a secret absent from it is reported under `not_sent`, not as a leak. A router model
+(`best-effort-*`) is resolved to the backends that served a request after the secret appeared,
+one leak row each (e.g. `k3` via `kimi-k3-completions.py`).
+
 Placeholders that are not credentials are excluded by giving the keyring item the attribute
 `not-secret=true` (`secretstorage`: `item.set_attributes({**item.get_attributes(), "not-secret": "true"})`).
 

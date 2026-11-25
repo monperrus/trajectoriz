@@ -114,6 +114,9 @@ class ScanResult:
     bytes_scanned: int = 0
     unattributed: int = 0
     skipped_undated: int = 0
+    # Found in an agent_probe log but absent from the conversation it actually sent
+    # (<id>_messages.json): the agent truncated the tool output before the model saw it.
+    not_sent: list[Leak] = field(default_factory=list)
 
 
 # --------------------------------------------------------------------------- #
@@ -551,6 +554,57 @@ def _leaks_for_file(
     ], 1
 
 
+def _agent_probe_messages(path: Path) -> Path | None:
+    """The sent conversation of an agent_probe log `<model>/<date>/<HHMMSS>_<id>.jsonl`:
+    `<model>/<id>_messages.json`, when this host kept it (mirrors usually do not)."""
+    _, sep, session_id = path.stem.partition("_")
+    if not sep:
+        return None
+    sidecar = path.parent.parent / f"{session_id}_messages.json"
+    return sidecar if sidecar.is_file() else None
+
+
+def _router_backends(path: Path, needle: str) -> list[tuple[str, str]]:
+    """(model, backend command) of each request served after the needle first appears.
+
+    A router model (best-effort-medium) falls back between backends; its log records the
+    backend of every request in a `usage` line. Every backend that served a request once
+    the secret was in the conversation received it.
+    """
+    seen_needle = False
+    backends: dict[tuple[str, str], None] = {}
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not seen_needle:
+                seen_needle = needle in line
+                continue
+            if '"backend"' not in line or '"usage"' not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            backend = record.get("backend")
+            if record.get("type") == "usage" and isinstance(backend, dict) and backend.get("model"):
+                command = str(backend.get("backend") or "").split()
+                backends[(str(backend["model"]), command[0] if command else "")] = None
+    return list(backends)
+
+
+def _refine_agent_probe(path: Path, needle: str, leaks: list[Leak]) -> tuple[list[Leak], list[Leak]]:
+    """Split agent_probe leaks into (sent, not sent) and name a router's real backends."""
+    if not leaks or leaks[0].agent != "agent_probe":
+        return leaks, []
+    sidecar = _agent_probe_messages(path)
+    if sidecar is not None and needle not in sidecar.read_text(encoding="utf-8", errors="replace"):
+        return [], leaks
+    backends = _router_backends(path, needle)
+    if not backends:
+        return leaks, []
+    return [replace(leak, model=model, endpoint=command)
+            for leak in leaks for model, command in backends], []
+
+
 _SESSION_COLUMNS = ("session_id", "sessionid", "session", "thread_id", "id")
 
 
@@ -758,6 +812,8 @@ def scan(
             leaks, unattributed = _leaks_for_file(
                 path, by_path.get(path, []), secret, labels, occurrences
             )
+            leaks, not_sent = _refine_agent_probe(path, needle, leaks)
+            result.not_sent += not_sent
             result.leaks += leaks
             result.unattributed += unattributed
 
@@ -791,6 +847,7 @@ def leaks_to_json(result: ScanResult) -> dict:
             "too_common": len(result.too_common),
             "unattributed_to_a_step": result.unattributed,
             "skipped_undated": result.skipped_undated,
+            "not_sent": len(result.not_sent),
         },
         "too_common": [
             {
@@ -803,6 +860,7 @@ def leaks_to_json(result: ScanResult) -> dict:
             }
             for common in result.too_common
         ],
+        "not_sent": [_leak_json(leak) for leak in result.not_sent],
         "leaks": [
             {
                 "fingerprint": leak.fingerprint,
@@ -822,4 +880,16 @@ def leaks_to_json(result: ScanResult) -> dict:
             }
             for leak in result.leaks
         ],
+    }
+
+
+def _leak_json(leak: Leak) -> dict:
+    return {
+        "fingerprint": leak.fingerprint,
+        "keyring_labels": list(leak.labels),
+        "agent": leak.agent,
+        "trajectory_id": leak.trajectory_id,
+        "timestamp": leak.timestamp,
+        "source": leak.source,
+        "model": leak.model,
     }
