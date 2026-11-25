@@ -193,7 +193,9 @@ flagged as partial.
 Two things keep the report honest rather than noisy. Keyring values shorter than
 `--min-length` (default 8) are skipped, and a value that turns up in more than `--max-files`
 trajectories (default 25) is listed separately as ordinary text — a dictionary-word password
-matches half the corpus and means nothing. Both are reported as counts, so nothing is dropped
+matches half the corpus and means nothing. A value that looks generated (20+ characters mixing
+letters and digits, few repeats: an API key, a token) is never treated as ordinary text: the more
+sessions it is in, the more it matters, so every one is itemised. Both are reported as counts, so nothing is dropped
 silently; `--max-files 0` removes the cap. Locked keyring collections are reported as
 unscanned rather than ignored.
 

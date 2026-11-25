@@ -601,3 +601,27 @@ def test_missing_local_copy_dir_is_fine(tmp_path, use_grep):
     secret = _secrets.KeyringSecret(label="L", schema="", collection="c", value="hunter2-local-copy")
     result = _secrets.scan([secret], [], use_grep=use_grep, store_dbs=[], local_copy_dirs=[tmp_path / "absent"])
     assert result.local_copies == []
+
+
+def test_looks_random():
+    assert _secrets.looks_random("aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY")  # 32-char API key: known positive
+    assert not _secrets.looks_random("correcthorsebattery")  # dictionary words: known negative
+    assert not _secrets.looks_random("1234567890abcdefghij" * 1 + " x")  # whitespace
+    assert not _secrets.looks_random("ab12" * 6)  # boundary: 24 chars but only 4 distinct
+    assert not _secrets.looks_random("Ab3dE5fG7hJ9kL1mN3p")  # 19 chars
+    assert _secrets.looks_random("0x" + "f39fd6e51aad88f6f4ce6ab8827279cfffb92266" * 2)  # hex private key
+    assert _secrets.looks_random("eyJhbGciOiJIUzI1NiJ9." + "eyJzdWIiOiIxMjM0NTY3ODkwIn0" * 4)  # JWT
+
+
+def test_a_random_value_in_many_files_is_itemised_not_quarantined(tmp_path, use_grep):
+    key = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1xY"
+    records = []
+    for i in range(6):
+        path = tmp_path / f"s{i}.jsonl"
+        _write_claude_traj(path, "hello", f"the password123 and {key} are everywhere")
+        records.append(tz.TrajectoryRecord(id=f"cl-{i:08d}", agent="claude", timestamp="2026-03-01T10:00:00Z",
+                                           first_msg="hello", source=path))
+    secrets = [_secret("password123", label="weak"), _secret(key, label="api")]
+    result = _secrets.scan(secrets, records, max_files=3, use_grep=use_grep, store_dbs=[], local_copy_dirs=[])
+    assert [c.labels for c in result.too_common] == [("weak",)]  # the word is quarantined
+    assert len({leak.trajectory_id for leak in result.leaks if leak.labels == ("api",)}) == 6  # the key is itemised

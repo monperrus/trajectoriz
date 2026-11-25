@@ -1760,7 +1760,8 @@ def main() -> None:
     p_secrets.add_argument(
         "--max-files", type=int, default=25, metavar="N",
         help="Treat a keyring value occurring in more than N trajectories as ordinary "
-             "text and list it separately (default: 25; 0 disables the cap).",
+             "text and list it separately, unless it looks like a generated credential (20+ "
+             "chars mixing letters and digits) (default: 25; 0 disables the cap).",
     )
     p_secrets.add_argument(
         "--group-by", choices=("secret", "trajectory"), default="secret",

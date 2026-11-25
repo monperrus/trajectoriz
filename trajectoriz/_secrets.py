@@ -573,6 +573,18 @@ def _leaks_for_file(
     ], 1
 
 
+def looks_random(value: str) -> bool:
+    """A generated credential (API key, token): never ordinary text, however often it occurs.
+
+    At least 20 characters, no whitespace, letters and digits mixed, and at least 16 distinct
+    characters (fewer for short values). A dictionary-word password or a shared Wi-Fi key fails
+    it; an API key, a JWT, a hex private key or a URL embedding a key passes.
+    """
+    return (len(value) >= 20 and not any(c.isspace() for c in value)
+            and any(c.isalpha() for c in value) and any(c.isdigit() for c in value)
+            and len(set(value)) >= min(16, 0.4 * len(value)))  # hex and base64 repeat a small alphabet
+
+
 def _agent_probe_messages(path: Path) -> Path | None:
     """The sent conversation of an agent_probe log `<model>/<date>/<HHMMSS>_<id>.jsonl`:
     `<model>/<id>_messages.json`, when this host kept it (mirrors usually do not)."""
@@ -810,7 +822,7 @@ def scan(
         per_file = matches.get(needle) or {}
         if not per_file:
             continue
-        if max_files and len(per_file) > max_files:
+        if max_files and len(per_file) > max_files and not looks_random(secret.value):
             # A keyring value that occurs in this many distinct trajectories is
             # ordinary text (a dictionary-word password, a common path), not a
             # leaked credential. Report it once instead of drowning the report.
