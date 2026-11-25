@@ -866,3 +866,32 @@ def test_iter_local_records_skips_backup_copy_of_live_session(tmp_path, monkeypa
         tz, "_iter_extra_folder_records", lambda cwd: iter([rec(backup), rec(only_backup)])
     )
     assert [r.source for r in tz.iter_local_records("/repo")] == [live, only_backup]
+
+
+def test_opencode_session_without_model_takes_it_from_its_messages(tmp_path):
+    import json
+    import sqlite3
+
+    from trajectoriz import iter_opencode_sessions
+
+    conn = sqlite3.connect(str(tmp_path / "opencode.db"))
+    conn.execute(
+        "CREATE TABLE session (id TEXT, time_created INTEGER, time_updated INTEGER, "
+        "model TEXT, directory TEXT, agent TEXT, cost REAL, tokens_input INTEGER, "
+        "tokens_output INTEGER, tokens_reasoning INTEGER, tokens_cache_read INTEGER, "
+        "tokens_cache_write INTEGER)"
+    )
+    conn.execute("CREATE TABLE message (id TEXT, session_id TEXT, time_created INTEGER, data TEXT)")
+    conn.execute("CREATE TABLE part (id TEXT, message_id TEXT, time_created INTEGER, data TEXT)")
+    for sid, model in (("old", None), ("new", "{\"id\":\"glm-5.3\"}")):
+        conn.execute("INSERT INTO session VALUES (?, 1, 2, ?, '/r', 'build', 0, 0, 0, 0, 0, 0)", (sid, model))
+    asst = lambda m: json.dumps({"role": "assistant", "providerID": "github-copilot", "modelID": m})
+    rows = [("a", "old", asst("claude-sonnet-4.6")), ("b", "old", asst("claude-sonnet-4.6")),
+            ("c", "old", asst("gpt-5-mini")), ("d", "new", asst("gpt-5-mini"))]
+    conn.executemany("INSERT INTO message VALUES (?, ?, 1, ?)", rows)
+    conn.commit()
+    conn.close()
+
+    models = {s.id: s.model for s in iter_opencode_sessions(opencode_dir=str(tmp_path))}
+    assert models["old"] == "github-copilot/claude-sonnet-4.6"  # empty session.model: most used message model
+    assert models["new"] == "{\"id\":\"glm-5.3\"}"  # a recorded session model is kept

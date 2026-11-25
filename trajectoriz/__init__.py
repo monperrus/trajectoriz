@@ -375,6 +375,20 @@ def _opencode_first_prompts(conn, session_ids: list[str]) -> dict[str, str]:
     return prompts
 
 
+def _opencode_message_models(conn) -> dict:
+    """session id -> its most used "providerID/modelID" over assistant messages."""
+    try:
+        rows = conn.execute(
+            "SELECT session_id, json_extract(data, '$.providerID'), json_extract(data, '$.modelID'), count(*) "
+            "FROM message WHERE json_extract(data, '$.role') = 'assistant' "
+            "AND json_extract(data, '$.modelID') IS NOT NULL GROUP BY 1, 2, 3 ORDER BY 4"
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    # ascending count: the last write per session is its most used model
+    return {sid: f"{prov}/{model}" if prov else model for sid, prov, model, _ in rows}
+
+
 def iter_opencode_sessions(opencode_dir=None):
     """Yield OpencodeSession objects from the opencode SQLite store."""
     d = (
@@ -395,13 +409,15 @@ def iter_opencode_sessions(opencode_dir=None):
                 "FROM session ORDER BY time_updated DESC"
             ).fetchall()
             first_prompts = _opencode_first_prompts(conn, [row[0] for row in rows])
+            message_models = _opencode_message_models(conn)
             for row in rows:
                 first_prompt = first_prompts.get(row[0], "")
                 yield OpencodeSession(
                     id=row[0],
                     time_created=row[1],
                     time_updated=row[2],
-                    model=row[3],
+                    # older sessions leave session.model empty; their messages still name it
+                    model=row[3] or message_models.get(row[0]),
                     directory=row[4],
                     agent=row[5],
                     cost=row[6],
