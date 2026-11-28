@@ -732,6 +732,11 @@ def get_cwd_from_trajectory(jsonl_path) -> str:
                 val = context.get("cwd") if isinstance(context, dict) else None
                 if val and isinstance(val, str):
                     return val
+                # Codex CLI nests it in session_meta: payload.cwd.
+                payload = d.get("payload")
+                val = payload.get("cwd") if isinstance(payload, dict) else None
+                if val and isinstance(val, str):
+                    return val
     except OSError:
         pass
     return ""
@@ -987,7 +992,7 @@ def _scan_first_msg(path, fmt: str) -> tuple[str, str]:
 
 # Bumped whenever get_cwd_from_trajectory learns a new layout: results cached
 # under the old kind are keyed by an unchanged mtime and would never refresh.
-_CWD_PROBE = "cwd_r2"
+_CWD_PROBE = "cwd_r3"
 
 
 def _scan_cwd(path) -> str:

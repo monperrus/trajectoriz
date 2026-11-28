@@ -62,6 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `get_cwd_from_trajectory` reads Codex CLI's working directory from
+  `session_meta.payload.cwd`; it returned "" for every Codex rollout, so
+  `--cwd` filters and extra-folder scans skipped Codex sessions. Cached cwd
+  probes are invalidated.
 - Claude Code sessions that open with a local slash-command transcript such as
   `/clear` now use the next substantive user prompt in lists and metadata search;
   command-only sessions have an empty first message. Cached probes are invalidated.

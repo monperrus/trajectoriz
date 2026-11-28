@@ -459,6 +459,22 @@ def test_get_cwd_from_trajectory_copilot_session_start(tmp_path):
     assert get_cwd_from_trajectory(f) == "/home/user/repo"
 
 
+def test_get_cwd_from_trajectory_codex_session_meta(tmp_path):
+    import json
+
+    from trajectoriz import get_cwd_from_trajectory
+
+    f = tmp_path / "rollout-2026-10-12T14-59-15-01a1.jsonl"
+    f.write_text(
+        json.dumps({
+            "timestamp": "2026-10-12T14:59:20.606Z",
+            "type": "session_meta",
+            "payload": {"id": "01a1", "cwd": "/home/user/repo", "originator": "codex-tui"},
+        }) + "\n"
+    )
+    assert get_cwd_from_trajectory(f) == "/home/user/repo"
+
+
 def test_get_cwd_from_trajectory_missing(tmp_path):
     from trajectoriz import get_cwd_from_trajectory
 
